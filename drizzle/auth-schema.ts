@@ -1,4 +1,3 @@
-// src/db/schema/auth.ts
 import { relations } from "drizzle-orm";
 import {
   mysqlTable,
@@ -9,26 +8,34 @@ import {
   index,
 } from "drizzle-orm/mysql-core";
 
-export const user = mysqlTable("user", {
-  id: varchar("id", { length: 36 }).primaryKey(),
+/**
+ * Better Auth core tables (aligned with your current generated schema)
+ */
 
-  // Better Auth base fields
-  name: varchar("name", { length: 255 }).notNull(),
-  email: varchar("email", { length: 255 }).notNull().unique(),
-  emailVerified: boolean("email_verified").default(false).notNull(),
-  image: text("image"),
-  createdAt: timestamp("created_at", { fsp: 3 }).defaultNow().notNull(),
-  updatedAt: timestamp("updated_at", { fsp: 3 })
-    .defaultNow()
-    .$onUpdate(() => new Date())
-    .notNull(),
+export const user = mysqlTable(
+  "user",
+  {
+    id: varchar("id", { length: 36 }).primaryKey(),
 
-  // App extensions
-  role: varchar("role", { length: 16 }).default("PATIENT").notNull(), // PATIENT|DOCTOR|STAFF
-  phone: varchar("phone", { length: 32 }),
-  signature: varchar("signature", { length: 128 }).notNull(),
-  isActive: boolean("is_active").default(true).notNull(),
-});
+    // better-auth base fields
+    name: varchar("name", { length: 255 }).notNull(),
+    email: varchar("email", { length: 255 }).notNull().unique(),
+    emailVerified: boolean("email_verified").default(false).notNull(),
+    image: text("image"),
+    createdAt: timestamp("created_at", { fsp: 3 }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { fsp: 3 })
+      .defaultNow()
+      .$onUpdate(() => new Date())
+      .notNull(),
+
+    // app extensions
+    role: varchar("role", { length: 16 }).default("PATIENT").notNull(), // PATIENT|DOCTOR|STAFF
+    phone: varchar("phone", { length: 32 }),
+    signature: varchar("signature", { length: 128 }).notNull(),
+    isActive: boolean("is_active").default(true).notNull(),
+  },
+  (t) => [index("user_role_idx").on(t.role), index("user_active_idx").on(t.isActive)],
+);
 
 export const session = mysqlTable(
   "session",
@@ -55,7 +62,7 @@ export const account = mysqlTable(
   {
     id: varchar("id", { length: 36 }).primaryKey(),
     accountId: text("account_id").notNull(),
-    providerId: text("provider_id").notNull(), // google, etc.
+    providerId: text("provider_id").notNull(),
     userId: varchar("user_id", { length: 36 })
       .notNull()
       .references(() => user.id, { onDelete: "cascade" }),
@@ -66,7 +73,6 @@ export const account = mysqlTable(
     accessTokenExpiresAt: timestamp("access_token_expires_at", { fsp: 3 }),
     refreshTokenExpiresAt: timestamp("refresh_token_expires_at", { fsp: 3 }),
     scope: text("scope"),
-
     password: text("password"),
 
     createdAt: timestamp("created_at", { fsp: 3 }).defaultNow().notNull(),
@@ -94,8 +100,7 @@ export const verification = mysqlTable(
   (t) => [index("verification_identifier_idx").on(t.identifier)],
 );
 
-// Relations strictly within auth domain
-export const userAuthRelations = relations(user, ({ many }) => ({
+export const userRelations = relations(user, ({ many }) => ({
   sessions: many(session),
   accounts: many(account),
 }));

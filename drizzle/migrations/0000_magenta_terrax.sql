@@ -54,6 +54,16 @@ CREATE TABLE `verification` (
 	CONSTRAINT `verification_id` PRIMARY KEY(`id`)
 );
 --> statement-breakpoint
+CREATE TABLE `doctor_patients` (
+	`id` varchar(36) NOT NULL,
+	`doctor_user_id` varchar(36) NOT NULL,
+	`patient_user_id` varchar(36) NOT NULL,
+	`status` varchar(16) NOT NULL DEFAULT 'ACTIVE',
+	`created_at` timestamp(3) NOT NULL DEFAULT (now()),
+	CONSTRAINT `doctor_patients_id` PRIMARY KEY(`id`),
+	CONSTRAINT `doctor_patients_unique` UNIQUE(`doctor_user_id`,`patient_user_id`)
+);
+--> statement-breakpoint
 CREATE TABLE `doctor_profile` (
 	`id` varchar(36) NOT NULL,
 	`user_id` varchar(36) NOT NULL,
@@ -61,7 +71,18 @@ CREATE TABLE `doctor_profile` (
 	`default_session_minutes` int NOT NULL DEFAULT 60,
 	`buffer_minutes` int NOT NULL DEFAULT 10,
 	CONSTRAINT `doctor_profile_id` PRIMARY KEY(`id`),
-	CONSTRAINT `doctor_profile_user_unique` UNIQUE(`user_id`)
+	CONSTRAINT `doctor_profile_user_id_unique` UNIQUE(`user_id`)
+);
+--> statement-breakpoint
+CREATE TABLE `doctor_staff` (
+	`id` varchar(36) NOT NULL,
+	`doctor_user_id` varchar(36) NOT NULL,
+	`staff_user_id` varchar(36) NOT NULL,
+	`staff_role` varchar(16) NOT NULL,
+	`is_active` boolean NOT NULL DEFAULT true,
+	`created_at` timestamp(3) NOT NULL DEFAULT (now()),
+	CONSTRAINT `doctor_staff_id` PRIMARY KEY(`id`),
+	CONSTRAINT `doctor_staff_unique` UNIQUE(`doctor_user_id`,`staff_user_id`)
 );
 --> statement-breakpoint
 CREATE TABLE `patient_profile` (
@@ -72,7 +93,7 @@ CREATE TABLE `patient_profile` (
 	`emergency_contact` varchar(255),
 	`notes` text,
 	CONSTRAINT `patient_profile_id` PRIMARY KEY(`id`),
-	CONSTRAINT `patient_profile_user_unique` UNIQUE(`user_id`)
+	CONSTRAINT `patient_profile_user_id_unique` UNIQUE(`user_id`)
 );
 --> statement-breakpoint
 CREATE TABLE `staff_profile` (
@@ -80,7 +101,7 @@ CREATE TABLE `staff_profile` (
 	`user_id` varchar(36) NOT NULL,
 	`staff_role` varchar(16) NOT NULL,
 	CONSTRAINT `staff_profile_id` PRIMARY KEY(`id`),
-	CONSTRAINT `staff_profile_user_unique` UNIQUE(`user_id`)
+	CONSTRAINT `staff_profile_user_id_unique` UNIQUE(`user_id`)
 );
 --> statement-breakpoint
 CREATE TABLE `user_keys` (
@@ -165,11 +186,26 @@ CREATE TABLE `document_keyrings` (
 	`wrapped_dek` text NOT NULL,
 	`wrap_algo` varchar(64) NOT NULL,
 	`created_at` timestamp(3) NOT NULL DEFAULT (now()),
-	CONSTRAINT `document_keyrings_id` PRIMARY KEY(`id`)
+	CONSTRAINT `document_keyrings_id` PRIMARY KEY(`id`),
+	CONSTRAINT `doc_keyrings_unique` UNIQUE(`document_id`,`user_id`,`user_key_version`)
+);
+--> statement-breakpoint
+CREATE TABLE `document_shares` (
+	`id` varchar(36) NOT NULL,
+	`document_id` varchar(36) NOT NULL,
+	`from_doctor_user_id` varchar(36) NOT NULL,
+	`to_doctor_user_id` varchar(36) NOT NULL,
+	`status` varchar(16) NOT NULL DEFAULT 'PENDING',
+	`note` text,
+	`created_at` timestamp(3) NOT NULL DEFAULT (now()),
+	`responded_at` timestamp(3),
+	CONSTRAINT `document_shares_id` PRIMARY KEY(`id`),
+	CONSTRAINT `document_shares_unique` UNIQUE(`document_id`,`to_doctor_user_id`)
 );
 --> statement-breakpoint
 CREATE TABLE `documents` (
 	`id` varchar(36) NOT NULL,
+	`owner_doctor_user_id` varchar(36) NOT NULL,
 	`appointment_id` varchar(36),
 	`patient_user_id` varchar(36) NOT NULL,
 	`uploaded_by_user_id` varchar(36) NOT NULL,
@@ -192,7 +228,8 @@ CREATE TABLE `report_access_request_items` (
 	`document_id` varchar(36) NOT NULL,
 	`status` varchar(16) NOT NULL,
 	`created_at` timestamp(3) NOT NULL DEFAULT (now()),
-	CONSTRAINT `report_access_request_items_id` PRIMARY KEY(`id`)
+	CONSTRAINT `report_access_request_items_id` PRIMARY KEY(`id`),
+	CONSTRAINT `rar_item_unique` UNIQUE(`request_id`,`document_id`)
 );
 --> statement-breakpoint
 CREATE TABLE `report_access_requests` (
@@ -242,9 +279,9 @@ CREATE TABLE `chat_participants` (
 --> statement-breakpoint
 CREATE TABLE `chat_rooms` (
 	`id` varchar(36) NOT NULL,
-	`type` varchar(24) NOT NULL,
-	`patient_user_id` varchar(36) NOT NULL,
 	`doctor_user_id` varchar(36) NOT NULL,
+	`type` varchar(24) NOT NULL,
+	`patient_user_id` varchar(36),
 	`created_at` timestamp(3) NOT NULL DEFAULT (now()),
 	`last_message_at` timestamp(3),
 	CONSTRAINT `chat_rooms_id` PRIMARY KEY(`id`)
@@ -252,7 +289,11 @@ CREATE TABLE `chat_rooms` (
 --> statement-breakpoint
 ALTER TABLE `account` ADD CONSTRAINT `account_user_id_user_id_fk` FOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE `session` ADD CONSTRAINT `session_user_id_user_id_fk` FOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE `doctor_patients` ADD CONSTRAINT `doctor_patients_doctor_user_id_user_id_fk` FOREIGN KEY (`doctor_user_id`) REFERENCES `user`(`id`) ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE `doctor_patients` ADD CONSTRAINT `doctor_patients_patient_user_id_user_id_fk` FOREIGN KEY (`patient_user_id`) REFERENCES `user`(`id`) ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE `doctor_profile` ADD CONSTRAINT `doctor_profile_user_id_user_id_fk` FOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE `doctor_staff` ADD CONSTRAINT `doctor_staff_doctor_user_id_user_id_fk` FOREIGN KEY (`doctor_user_id`) REFERENCES `user`(`id`) ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE `doctor_staff` ADD CONSTRAINT `doctor_staff_staff_user_id_user_id_fk` FOREIGN KEY (`staff_user_id`) REFERENCES `user`(`id`) ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE `patient_profile` ADD CONSTRAINT `patient_profile_user_id_user_id_fk` FOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE `staff_profile` ADD CONSTRAINT `staff_profile_user_id_user_id_fk` FOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE `user_keys` ADD CONSTRAINT `user_keys_user_id_user_id_fk` FOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -267,6 +308,10 @@ ALTER TABLE `document_access` ADD CONSTRAINT `document_access_user_id_user_id_fk
 ALTER TABLE `document_access` ADD CONSTRAINT `document_access_granted_by_user_id_user_id_fk` FOREIGN KEY (`granted_by_user_id`) REFERENCES `user`(`id`) ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE `document_keyrings` ADD CONSTRAINT `document_keyrings_document_id_documents_id_fk` FOREIGN KEY (`document_id`) REFERENCES `documents`(`id`) ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE `document_keyrings` ADD CONSTRAINT `document_keyrings_user_id_user_id_fk` FOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE `document_shares` ADD CONSTRAINT `document_shares_document_id_documents_id_fk` FOREIGN KEY (`document_id`) REFERENCES `documents`(`id`) ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE `document_shares` ADD CONSTRAINT `document_shares_from_doctor_user_id_user_id_fk` FOREIGN KEY (`from_doctor_user_id`) REFERENCES `user`(`id`) ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE `document_shares` ADD CONSTRAINT `document_shares_to_doctor_user_id_user_id_fk` FOREIGN KEY (`to_doctor_user_id`) REFERENCES `user`(`id`) ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE `documents` ADD CONSTRAINT `documents_owner_doctor_user_id_user_id_fk` FOREIGN KEY (`owner_doctor_user_id`) REFERENCES `user`(`id`) ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE `documents` ADD CONSTRAINT `documents_appointment_id_appointments_id_fk` FOREIGN KEY (`appointment_id`) REFERENCES `appointments`(`id`) ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE `documents` ADD CONSTRAINT `documents_patient_user_id_user_id_fk` FOREIGN KEY (`patient_user_id`) REFERENCES `user`(`id`) ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE `documents` ADD CONSTRAINT `documents_uploaded_by_user_id_user_id_fk` FOREIGN KEY (`uploaded_by_user_id`) REFERENCES `user`(`id`) ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -280,26 +325,47 @@ ALTER TABLE `chat_messages` ADD CONSTRAINT `chat_messages_room_id_chat_rooms_id_
 ALTER TABLE `chat_messages` ADD CONSTRAINT `chat_messages_sender_user_id_user_id_fk` FOREIGN KEY (`sender_user_id`) REFERENCES `user`(`id`) ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE `chat_participants` ADD CONSTRAINT `chat_participants_room_id_chat_rooms_id_fk` FOREIGN KEY (`room_id`) REFERENCES `chat_rooms`(`id`) ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE `chat_participants` ADD CONSTRAINT `chat_participants_user_id_user_id_fk` FOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE `chat_rooms` ADD CONSTRAINT `chat_rooms_patient_user_id_user_id_fk` FOREIGN KEY (`patient_user_id`) REFERENCES `user`(`id`) ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE `chat_rooms` ADD CONSTRAINT `chat_rooms_doctor_user_id_user_id_fk` FOREIGN KEY (`doctor_user_id`) REFERENCES `user`(`id`) ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE `chat_rooms` ADD CONSTRAINT `chat_rooms_patient_user_id_user_id_fk` FOREIGN KEY (`patient_user_id`) REFERENCES `user`(`id`) ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX `account_userId_idx` ON `account` (`user_id`);--> statement-breakpoint
 CREATE INDEX `session_userId_idx` ON `session` (`user_id`);--> statement-breakpoint
+CREATE INDEX `user_role_idx` ON `user` (`role`);--> statement-breakpoint
+CREATE INDEX `user_active_idx` ON `user` (`is_active`);--> statement-breakpoint
 CREATE INDEX `verification_identifier_idx` ON `verification` (`identifier`);--> statement-breakpoint
+CREATE INDEX `doctor_patients_doctor_idx` ON `doctor_patients` (`doctor_user_id`);--> statement-breakpoint
+CREATE INDEX `doctor_patients_patient_idx` ON `doctor_patients` (`patient_user_id`);--> statement-breakpoint
+CREATE INDEX `doctor_patients_status_idx` ON `doctor_patients` (`doctor_user_id`,`status`);--> statement-breakpoint
+CREATE INDEX `doctor_profile_user_idx` ON `doctor_profile` (`user_id`);--> statement-breakpoint
+CREATE INDEX `doctor_staff_doctor_idx` ON `doctor_staff` (`doctor_user_id`,`is_active`);--> statement-breakpoint
+CREATE INDEX `doctor_staff_staff_idx` ON `doctor_staff` (`staff_user_id`);--> statement-breakpoint
+CREATE INDEX `patient_profile_user_idx` ON `patient_profile` (`user_id`);--> statement-breakpoint
+CREATE INDEX `staff_profile_user_idx` ON `staff_profile` (`user_id`);--> statement-breakpoint
 CREATE INDEX `user_keys_active_idx` ON `user_keys` (`user_id`,`is_active`);--> statement-breakpoint
 CREATE INDEX `slots_doctor_status_idx` ON `appointment_slots` (`doctor_user_id`,`status`);--> statement-breakpoint
+CREATE INDEX `slots_start_idx` ON `appointment_slots` (`starts_at`);--> statement-breakpoint
 CREATE INDEX `appointments_doctor_idx` ON `appointments` (`doctor_user_id`);--> statement-breakpoint
 CREATE INDEX `appointments_patient_idx` ON `appointments` (`patient_user_id`);--> statement-breakpoint
+CREATE INDEX `appointments_status_idx` ON `appointments` (`doctor_user_id`,`status`);--> statement-breakpoint
 CREATE INDEX `schedule_exceptions_doctor_date_idx` ON `schedule_exceptions` (`doctor_user_id`,`date`);--> statement-breakpoint
 CREATE INDEX `schedule_rules_doctor_idx` ON `schedule_rules` (`doctor_user_id`);--> statement-breakpoint
 CREATE INDEX `doc_access_user_idx` ON `document_access` (`user_id`);--> statement-breakpoint
+CREATE INDEX `doc_access_doc_idx` ON `document_access` (`document_id`);--> statement-breakpoint
 CREATE INDEX `doc_keyrings_doc_idx` ON `document_keyrings` (`document_id`);--> statement-breakpoint
 CREATE INDEX `doc_keyrings_user_idx` ON `document_keyrings` (`user_id`);--> statement-breakpoint
-CREATE INDEX `docs_patient_idx` ON `documents` (`patient_user_id`);--> statement-breakpoint
+CREATE INDEX `document_shares_to_idx` ON `document_shares` (`to_doctor_user_id`,`status`);--> statement-breakpoint
+CREATE INDEX `document_shares_from_idx` ON `document_shares` (`from_doctor_user_id`,`status`);--> statement-breakpoint
+CREATE INDEX `docs_owner_idx` ON `documents` (`owner_doctor_user_id`,`created_at`);--> statement-breakpoint
+CREATE INDEX `docs_patient_idx` ON `documents` (`patient_user_id`,`created_at`);--> statement-breakpoint
 CREATE INDEX `docs_appt_idx` ON `documents` (`appointment_id`);--> statement-breakpoint
+CREATE INDEX `rar_item_doc_idx` ON `report_access_request_items` (`document_id`);--> statement-breakpoint
+CREATE INDEX `rar_item_req_idx` ON `report_access_request_items` (`request_id`);--> statement-breakpoint
 CREATE INDEX `rar_patient_idx` ON `report_access_requests` (`patient_user_id`);--> statement-breakpoint
 CREATE INDEX `rar_doctor_idx` ON `report_access_requests` (`doctor_user_id`);--> statement-breakpoint
 CREATE INDEX `rar_status_idx` ON `report_access_requests` (`status`);--> statement-breakpoint
+CREATE INDEX `rar_doctor_status_idx` ON `report_access_requests` (`doctor_user_id`,`status`);--> statement-breakpoint
 CREATE INDEX `chat_batches_room_idx` ON `chat_message_batches` (`room_id`);--> statement-breakpoint
 CREATE INDEX `chat_messages_room_time_idx` ON `chat_messages` (`room_id`,`created_at`);--> statement-breakpoint
+CREATE INDEX `chat_messages_sender_idx` ON `chat_messages` (`sender_user_id`);--> statement-breakpoint
 CREATE INDEX `chat_participants_user_idx` ON `chat_participants` (`user_id`);--> statement-breakpoint
-CREATE INDEX `chat_rooms_patient_doctor_idx` ON `chat_rooms` (`patient_user_id`,`doctor_user_id`);
+CREATE INDEX `chat_rooms_doctor_idx` ON `chat_rooms` (`doctor_user_id`,`last_message_at`);--> statement-breakpoint
+CREATE INDEX `chat_rooms_patient_idx` ON `chat_rooms` (`patient_user_id`);

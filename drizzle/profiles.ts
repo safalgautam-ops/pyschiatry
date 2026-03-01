@@ -1,7 +1,19 @@
-// src/db/schema/profiles.ts
-import { relations } from "drizzle-orm";
-import { mysqlTable, varchar, int, date, text, uniqueIndex } from "drizzle-orm/mysql-core";
+import {
+  mysqlTable,
+  varchar,
+  timestamp,
+  int,
+  date,
+  text,
+  boolean,
+  index,
+  uniqueIndex,
+} from "drizzle-orm/mysql-core";
 import { user } from "./auth-schema";
+
+/**
+ * Role-specific profiles
+ */
 
 export const doctorProfile = mysqlTable(
   "doctor_profile",
@@ -9,12 +21,14 @@ export const doctorProfile = mysqlTable(
     id: varchar("id", { length: 36 }).primaryKey(),
     userId: varchar("user_id", { length: 36 })
       .notNull()
+      .unique()
       .references(() => user.id, { onDelete: "cascade" }),
+
     timezone: varchar("timezone", { length: 64 }).notNull(),
     defaultSessionMinutes: int("default_session_minutes").default(60).notNull(),
     bufferMinutes: int("buffer_minutes").default(10).notNull(),
   },
-  (t) => [uniqueIndex("doctor_profile_user_unique").on(t.userId)],
+  (t) => [index("doctor_profile_user_idx").on(t.userId)],
 );
 
 export const patientProfile = mysqlTable(
@@ -23,13 +37,15 @@ export const patientProfile = mysqlTable(
     id: varchar("id", { length: 36 }).primaryKey(),
     userId: varchar("user_id", { length: 36 })
       .notNull()
+      .unique()
       .references(() => user.id, { onDelete: "cascade" }),
+
     dateOfBirth: date("date_of_birth"),
     gender: varchar("gender", { length: 32 }),
     emergencyContact: varchar("emergency_contact", { length: 255 }),
     notes: text("notes"),
   },
-  (t) => [uniqueIndex("patient_profile_user_unique").on(t.userId)],
+  (t) => [index("patient_profile_user_idx").on(t.userId)],
 );
 
 export const staffProfile = mysqlTable(
@@ -38,21 +54,62 @@ export const staffProfile = mysqlTable(
     id: varchar("id", { length: 36 }).primaryKey(),
     userId: varchar("user_id", { length: 36 })
       .notNull()
+      .unique()
       .references(() => user.id, { onDelete: "cascade" }),
+
+    // generic “type”; doctor assignment happens in doctorStaff table
     staffRole: varchar("staff_role", { length: 16 }).notNull(), // ADMIN|RECEPTION
   },
-  (t) => [uniqueIndex("staff_profile_user_unique").on(t.userId)],
+  (t) => [index("staff_profile_user_idx").on(t.userId)],
 );
 
-// Profile relations (to user)
-export const doctorProfileRelations = relations(doctorProfile, ({ one }) => ({
-  user: one(user, { fields: [doctorProfile.userId], references: [user.id] }),
-}));
+/**
+ * Multi-doctor isolation tables
+ * - a patient can be linked to many doctors
+ * - a staff can serve many doctors
+ */
 
-export const patientProfileRelations = relations(patientProfile, ({ one }) => ({
-  user: one(user, { fields: [patientProfile.userId], references: [user.id] }),
-}));
+export const doctorPatients = mysqlTable(
+  "doctor_patients",
+  {
+    id: varchar("id", { length: 36 }).primaryKey(),
+    doctorUserId: varchar("doctor_user_id", { length: 36 })
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    patientUserId: varchar("patient_user_id", { length: 36 })
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    status: varchar("status", { length: 16 }).default("ACTIVE").notNull(), // ACTIVE|BLOCKED|ARCHIVED
+    createdAt: timestamp("created_at", { fsp: 3 }).defaultNow().notNull(),
+  },
+  (t) => [
+    uniqueIndex("doctor_patients_unique").on(t.doctorUserId, t.patientUserId),
+    index("doctor_patients_doctor_idx").on(t.doctorUserId),
+    index("doctor_patients_patient_idx").on(t.patientUserId),
+    index("doctor_patients_status_idx").on(t.doctorUserId, t.status),
+  ],
+);
 
-export const staffProfileRelations = relations(staffProfile, ({ one }) => ({
-  user: one(user, { fields: [staffProfile.userId], references: [user.id] }),
-}));
+export const doctorStaff = mysqlTable(
+  "doctor_staff",
+  {
+    id: varchar("id", { length: 36 }).primaryKey(),
+    doctorUserId: varchar("doctor_user_id", { length: 36 })
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    staffUserId: varchar("staff_user_id", { length: 36 })
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+
+    // role for THIS doctor assignment
+    staffRole: varchar("staff_role", { length: 16 }).notNull(), // ADMIN|RECEPTION
+    isActive: boolean("is_active").default(true).notNull(),
+
+    createdAt: timestamp("created_at", { fsp: 3 }).defaultNow().notNull(),
+  },
+  (t) => [
+    uniqueIndex("doctor_staff_unique").on(t.doctorUserId, t.staffUserId),
+    index("doctor_staff_doctor_idx").on(t.doctorUserId, t.isActive),
+    index("doctor_staff_staff_idx").on(t.staffUserId),
+  ],
+);

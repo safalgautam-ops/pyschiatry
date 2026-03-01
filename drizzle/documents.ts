@@ -1,22 +1,29 @@
-// src/db/schema/documents.ts
-import { relations } from "drizzle-orm";
 import {
   mysqlTable,
   varchar,
   text,
   timestamp,
-  int,
   boolean,
+  int,
   index,
   uniqueIndex,
 } from "drizzle-orm/mysql-core";
 import { user } from "./auth-schema";
 import { appointments } from "./scheduling";
 
+/**
+ * Encrypted documents + access control + keyrings + sharing
+ */
+
 export const documents = mysqlTable(
   "documents",
   {
     id: varchar("id", { length: 36 }).primaryKey(),
+
+    // NEW: hard scoping for multi-doctor
+    ownerDoctorUserId: varchar("owner_doctor_user_id", { length: 36 })
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
 
     appointmentId: varchar("appointment_id", { length: 36 }).references(
       () => appointments.id,
@@ -45,7 +52,8 @@ export const documents = mysqlTable(
     createdAt: timestamp("created_at", { fsp: 3 }).defaultNow().notNull(),
   },
   (t) => [
-    index("docs_patient_idx").on(t.patientUserId),
+    index("docs_owner_idx").on(t.ownerDoctorUserId, t.createdAt),
+    index("docs_patient_idx").on(t.patientUserId, t.createdAt),
     index("docs_appt_idx").on(t.appointmentId),
   ],
 );
@@ -54,7 +62,6 @@ export const documentAccess = mysqlTable(
   "document_access",
   {
     id: varchar("id", { length: 36 }).primaryKey(),
-
     documentId: varchar("document_id", { length: 36 })
       .notNull()
       .references(() => documents.id, { onDelete: "cascade" }),
@@ -76,6 +83,7 @@ export const documentAccess = mysqlTable(
   (t) => [
     uniqueIndex("doc_access_unique").on(t.documentId, t.userId),
     index("doc_access_user_idx").on(t.userId),
+    index("doc_access_doc_idx").on(t.documentId),
   ],
 );
 
@@ -83,7 +91,6 @@ export const documentKeyrings = mysqlTable(
   "document_keyrings",
   {
     id: varchar("id", { length: 36 }).primaryKey(),
-
     documentId: varchar("document_id", { length: 36 })
       .notNull()
       .references(() => documents.id, { onDelete: "cascade" }),
@@ -101,26 +108,38 @@ export const documentKeyrings = mysqlTable(
   (t) => [
     index("doc_keyrings_doc_idx").on(t.documentId),
     index("doc_keyrings_user_idx").on(t.userId),
+    uniqueIndex("doc_keyrings_unique").on(t.documentId, t.userId, t.userKeyVersion),
   ],
 );
 
-// Relations for documents domain
-export const documentsRelations = relations(documents, ({ one, many }) => ({
-  appointment: one(appointments, { fields: [documents.appointmentId], references: [appointments.id] }),
-  patient: one(user, { fields: [documents.patientUserId], references: [user.id] }),
-  uploader: one(user, { fields: [documents.uploadedByUserId], references: [user.id] }),
+/**
+ * NEW: doctor-to-doctor sharing lifecycle
+ * Actual access is still enforced by document_access + document_keyrings.
+ */
+export const documentShares = mysqlTable(
+  "document_shares",
+  {
+    id: varchar("id", { length: 36 }).primaryKey(),
+    documentId: varchar("document_id", { length: 36 })
+      .notNull()
+      .references(() => documents.id, { onDelete: "cascade" }),
 
-  access: many(documentAccess),
-  keyrings: many(documentKeyrings),
-}));
+    fromDoctorUserId: varchar("from_doctor_user_id", { length: 36 })
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
 
-export const documentAccessRelations = relations(documentAccess, ({ one }) => ({
-  document: one(documents, { fields: [documentAccess.documentId], references: [documents.id] }),
-  user: one(user, { fields: [documentAccess.userId], references: [user.id] }),
-  grantedBy: one(user, { fields: [documentAccess.grantedByUserId], references: [user.id] }),
-}));
+    toDoctorUserId: varchar("to_doctor_user_id", { length: 36 })
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
 
-export const documentKeyringsRelations = relations(documentKeyrings, ({ one }) => ({
-  document: one(documents, { fields: [documentKeyrings.documentId], references: [documents.id] }),
-  user: one(user, { fields: [documentKeyrings.userId], references: [user.id] }),
-}));
+    status: varchar("status", { length: 16 }).default("PENDING").notNull(), // PENDING|ACCEPTED|REJECTED|REVOKED
+    note: text("note"),
+    createdAt: timestamp("created_at", { fsp: 3 }).defaultNow().notNull(),
+    respondedAt: timestamp("responded_at", { fsp: 3 }),
+  },
+  (t) => [
+    uniqueIndex("document_shares_unique").on(t.documentId, t.toDoctorUserId),
+    index("document_shares_to_idx").on(t.toDoctorUserId, t.status),
+    index("document_shares_from_idx").on(t.fromDoctorUserId, t.status),
+  ],
+);

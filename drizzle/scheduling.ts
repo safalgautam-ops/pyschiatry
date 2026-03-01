@@ -1,5 +1,3 @@
-// src/db/schema/scheduling.ts
-import { relations } from "drizzle-orm";
 import {
   mysqlTable,
   varchar,
@@ -12,6 +10,10 @@ import {
 } from "drizzle-orm/mysql-core";
 import { user } from "./auth-schema";
 
+/**
+ * Scheduling (per doctor user)
+ */
+
 export const scheduleRules = mysqlTable(
   "schedule_rules",
   {
@@ -19,9 +21,10 @@ export const scheduleRules = mysqlTable(
     doctorUserId: varchar("doctor_user_id", { length: 36 })
       .notNull()
       .references(() => user.id, { onDelete: "cascade" }),
+
     dayOfWeek: int("day_of_week").notNull(), // 0-6
     startTime: varchar("start_time", { length: 5 }).notNull(), // HH:mm
-    endTime: varchar("end_time", { length: 5 }).notNull(), // HH:mm
+    endTime: varchar("end_time", { length: 5 }).notNull(),
   },
   (t) => [index("schedule_rules_doctor_idx").on(t.doctorUserId)],
 );
@@ -33,6 +36,7 @@ export const scheduleExceptions = mysqlTable(
     doctorUserId: varchar("doctor_user_id", { length: 36 })
       .notNull()
       .references(() => user.id, { onDelete: "cascade" }),
+
     date: date("date").notNull(),
     type: varchar("type", { length: 16 }).notNull(), // OFF|CUSTOM_HOURS
     startTime: varchar("start_time", { length: 5 }),
@@ -49,6 +53,7 @@ export const appointmentSlots = mysqlTable(
     doctorUserId: varchar("doctor_user_id", { length: 36 })
       .notNull()
       .references(() => user.id, { onDelete: "cascade" }),
+
     startsAt: timestamp("starts_at", { fsp: 3 }).notNull(),
     endsAt: timestamp("ends_at", { fsp: 3 }).notNull(),
     status: varchar("status", { length: 16 }).notNull(), // OPEN|HELD|BOOKED|BLOCKED
@@ -59,6 +64,7 @@ export const appointmentSlots = mysqlTable(
   (t) => [
     uniqueIndex("slot_unique_time").on(t.doctorUserId, t.startsAt, t.endsAt),
     index("slots_doctor_status_idx").on(t.doctorUserId, t.status),
+    index("slots_start_idx").on(t.startsAt),
   ],
 );
 
@@ -87,16 +93,6 @@ export const appointments = mysqlTable(
   (t) => [
     index("appointments_doctor_idx").on(t.doctorUserId),
     index("appointments_patient_idx").on(t.patientUserId),
+    index("appointments_status_idx").on(t.doctorUserId, t.status),
   ],
 );
-
-// Relations for scheduling domain
-export const appointmentSlotsRelations = relations(appointmentSlots, ({ one }) => ({
-  doctor: one(user, { fields: [appointmentSlots.doctorUserId], references: [user.id] }),
-}));
-
-export const appointmentsRelations = relations(appointments, ({ one }) => ({
-  slot: one(appointmentSlots, { fields: [appointments.slotId], references: [appointmentSlots.id] }),
-  doctor: one(user, { fields: [appointments.doctorUserId], references: [user.id] }),
-  patient: one(user, { fields: [appointments.patientUserId], references: [user.id] }),
-}));

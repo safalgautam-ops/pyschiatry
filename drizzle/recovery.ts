@@ -1,15 +1,18 @@
-// src/db/schema/recovery.ts
-import { relations } from "drizzle-orm";
 import {
   mysqlTable,
   varchar,
   text,
   timestamp,
   index,
+  uniqueIndex,
   foreignKey,
 } from "drizzle-orm/mysql-core";
 import { user } from "./auth-schema";
 import { documents } from "./documents";
+
+/**
+ * Permission-based recovery after password reset (doctor re-keys access)
+ */
 
 export const reportAccessRequests = mysqlTable(
   "report_access_requests",
@@ -38,6 +41,7 @@ export const reportAccessRequests = mysqlTable(
     index("rar_patient_idx").on(t.patientUserId),
     index("rar_doctor_idx").on(t.doctorUserId),
     index("rar_status_idx").on(t.status),
+    index("rar_doctor_status_idx").on(t.doctorUserId, t.status),
   ],
 );
 
@@ -46,36 +50,29 @@ export const reportAccessRequestItems = mysqlTable(
   {
     id: varchar("id", { length: 36 }).primaryKey(),
 
+    // define columns without .references() so we can use named foreignKey() below
     requestId: varchar("request_id", { length: 36 }).notNull(),
     documentId: varchar("document_id", { length: 36 }).notNull(),
 
-    status: varchar("status", { length: 16 }).notNull(),
+    status: varchar("status", { length: 16 }).notNull(), // PENDING|REKEYED|FAILED
     createdAt: timestamp("created_at", { fsp: 3 }).defaultNow().notNull(),
   },
-  (t) => ({
-    requestFk: foreignKey({
-      name: "rar_items_req_fk",   // ✅ SHORT NAME
+  (t) => [
+    // ✅ Short FK names (avoid MySQL 64-char identifier limit)
+    foreignKey({
+      name: "rar_items_req_fk",
       columns: [t.requestId],
       foreignColumns: [reportAccessRequests.id],
     }).onDelete("cascade"),
 
-    documentFk: foreignKey({
-      name: "rar_items_doc_fk",   // ✅ SHORT NAME
+    foreignKey({
+      name: "rar_items_doc_fk",
       columns: [t.documentId],
       foreignColumns: [documents.id],
     }).onDelete("cascade"),
-  }),
+
+    uniqueIndex("rar_item_unique").on(t.requestId, t.documentId),
+    index("rar_item_doc_idx").on(t.documentId),
+    index("rar_item_req_idx").on(t.requestId),
+  ],
 );
-
-// Relations for recovery domain
-export const reportAccessRequestsRelations = relations(reportAccessRequests, ({ one, many }) => ({
-  patient: one(user, { fields: [reportAccessRequests.patientUserId], references: [user.id] }),
-  doctor: one(user, { fields: [reportAccessRequests.doctorUserId], references: [user.id] }),
-  resolvedBy: one(user, { fields: [reportAccessRequests.resolvedByUserId], references: [user.id] }),
-  items: many(reportAccessRequestItems),
-}));
-
-export const reportAccessRequestItemsRelations = relations(reportAccessRequestItems, ({ one }) => ({
-  request: one(reportAccessRequests, { fields: [reportAccessRequestItems.requestId], references: [reportAccessRequests.id] }),
-  document: one(documents, { fields: [reportAccessRequestItems.documentId], references: [documents.id] }),
-}));

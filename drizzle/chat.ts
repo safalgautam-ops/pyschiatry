@@ -1,5 +1,3 @@
-// src/db/schema/chat.ts
-import { relations } from "drizzle-orm";
 import {
   mysqlTable,
   varchar,
@@ -11,31 +9,40 @@ import {
 } from "drizzle-orm/mysql-core";
 import { user } from "./auth-schema";
 
+/**
+ * Durable chat tables (Redis buffer is ephemeral, not in DB)
+ */
+
 export const chatRooms = mysqlTable(
   "chat_rooms",
   {
     id: varchar("id", { length: 36 }).primaryKey(),
-    type: varchar("type", { length: 24 }).notNull(), // PATIENT_DOCTOR|PATIENT_STAFF
 
-    patientUserId: varchar("patient_user_id", { length: 36 })
-      .notNull()
-      .references(() => user.id, { onDelete: "cascade" }),
-
+    // For multi-doctor scoping
     doctorUserId: varchar("doctor_user_id", { length: 36 })
       .notNull()
       .references(() => user.id, { onDelete: "cascade" }),
 
+    // room can be patient-doctor or patient-staff
+    type: varchar("type", { length: 24 }).notNull(), // PATIENT_DOCTOR|PATIENT_STAFF|DOCTOR_DOCTOR (optional)
+
+    patientUserId: varchar("patient_user_id", { length: 36 }).references(() => user.id, {
+      onDelete: "cascade",
+    }),
+
     createdAt: timestamp("created_at", { fsp: 3 }).defaultNow().notNull(),
     lastMessageAt: timestamp("last_message_at", { fsp: 3 }),
   },
-  (t) => [index("chat_rooms_patient_doctor_idx").on(t.patientUserId, t.doctorUserId)],
+  (t) => [
+    index("chat_rooms_doctor_idx").on(t.doctorUserId, t.lastMessageAt),
+    index("chat_rooms_patient_idx").on(t.patientUserId),
+  ],
 );
 
 export const chatParticipants = mysqlTable(
   "chat_participants",
   {
     id: varchar("id", { length: 36 }).primaryKey(),
-
     roomId: varchar("room_id", { length: 36 })
       .notNull()
       .references(() => chatRooms.id, { onDelete: "cascade" }),
@@ -57,8 +64,7 @@ export const chatParticipants = mysqlTable(
 export const chatMessages = mysqlTable(
   "chat_messages",
   {
-    id: varchar("id", { length: 36 }).primaryKey(),
-
+    id: varchar("id", { length: 36 }).primaryKey(), // use your realtime message id
     roomId: varchar("room_id", { length: 36 })
       .notNull()
       .references(() => chatRooms.id, { onDelete: "cascade" }),
@@ -75,14 +81,16 @@ export const chatMessages = mysqlTable(
     replyToMessageId: varchar("reply_to_message_id", { length: 36 }),
     metadata: text("metadata"),
   },
-  (t) => [index("chat_messages_room_time_idx").on(t.roomId, t.createdAt)],
+  (t) => [
+    index("chat_messages_room_time_idx").on(t.roomId, t.createdAt),
+    index("chat_messages_sender_idx").on(t.senderUserId),
+  ],
 );
 
 export const chatMessageBatches = mysqlTable(
   "chat_message_batches",
   {
     id: varchar("id", { length: 36 }).primaryKey(),
-
     roomId: varchar("room_id", { length: 36 })
       .notNull()
       .references(() => chatRooms.id, { onDelete: "cascade" }),
@@ -93,25 +101,3 @@ export const chatMessageBatches = mysqlTable(
   },
   (t) => [index("chat_batches_room_idx").on(t.roomId)],
 );
-
-// Relations for chat domain
-export const chatRoomsRelations = relations(chatRooms, ({ one, many }) => ({
-  patient: one(user, { fields: [chatRooms.patientUserId], references: [user.id] }),
-  doctor: one(user, { fields: [chatRooms.doctorUserId], references: [user.id] }),
-  participants: many(chatParticipants),
-  messages: many(chatMessages),
-}));
-
-export const chatParticipantsRelations = relations(chatParticipants, ({ one }) => ({
-  room: one(chatRooms, { fields: [chatParticipants.roomId], references: [chatRooms.id] }),
-  user: one(user, { fields: [chatParticipants.userId], references: [user.id] }),
-}));
-
-export const chatMessagesRelations = relations(chatMessages, ({ one }) => ({
-  room: one(chatRooms, { fields: [chatMessages.roomId], references: [chatRooms.id] }),
-  sender: one(user, { fields: [chatMessages.senderUserId], references: [user.id] }),
-}));
-
-export const chatMessageBatchesRelations = relations(chatMessageBatches, ({ one }) => ({
-  room: one(chatRooms, { fields: [chatMessageBatches.roomId], references: [chatRooms.id] }),
-}));

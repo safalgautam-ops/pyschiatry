@@ -1,5 +1,3 @@
-// src/db/schema/crypto.ts
-import { relations } from "drizzle-orm";
 import {
   mysqlTable,
   varchar,
@@ -12,6 +10,9 @@ import {
 } from "drizzle-orm/mysql-core";
 import { user } from "./auth-schema";
 
+/**
+ * Crypto identity / key rotation
+ */
 export const userKeys = mysqlTable(
   "user_keys",
   {
@@ -35,7 +36,3 @@ export const userKeys = mysqlTable(
     index("user_keys_active_idx").on(t.userId, t.isActive),
   ],
 );
-
-export const userKeysRelations = relations(userKeys, ({ one }) => ({
-  user: one(user, { fields: [userKeys.userId], references: [user.id] }),
-}));
