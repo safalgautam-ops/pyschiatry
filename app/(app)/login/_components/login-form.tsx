@@ -44,22 +44,15 @@ export function LoginForm({
     e.preventDefault();
     setIsLoading(true);
     setError("");
-    try {
-      const result = await signIn(email, password);
-      if (result?.user) {
-        router.push("/dashboard");
-      } else {
-        setError("Invalid email or password.");
-      }
-    } catch (err) {
-      setError(
-        `Authentication error: ${
-          err instanceof Error ? err.message : "Unknown error"
-        }`,
-      );
-    } finally {
-      setIsLoading(false);
+
+    const result = await signIn(email, password);
+    if (result.success) {
+      router.push("/dashboard");
+    } else {
+      setError(result.message || "Invalid email or password.");
     }
+
+    setIsLoading(false);
   };
 
   return (

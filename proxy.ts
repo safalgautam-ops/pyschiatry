@@ -9,13 +9,13 @@ type SessionState = {
 };
 
 const AUTH_ONLY_ROUTES = ["/login", "/signup", "/forgot-password"];
-const PROTECTED_PREFIXES = ["/dashboard", "/patient", "/staff", "/doctor"];
+const PROTECTED_PREFIXES = ["/dashboard"];
 
 // Role-specific route segments. Keep these aligned with app route design.
 const ROLE_PREFIXES: Record<AppRole, string[]> = {
-  PATIENT: ["/patient"],
-  STAFF: ["/staff"],
-  DOCTOR: ["/doctor"],
+  PATIENT: ["/dashboard/patient"],
+  STAFF: ["/dashboard/staff"],
+  DOCTOR: ["/dashboard/doctor"],
 };
 
 const DEFAULT_AUTH_REDIRECT = "/dashboard";

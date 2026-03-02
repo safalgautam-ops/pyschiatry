@@ -142,13 +142,7 @@ const chartConfig = {
 
 export function ChartAreaInteractive() {
   const isMobile = useIsMobile()
-  const [timeRange, setTimeRange] = React.useState("90d")
-
-  React.useEffect(() => {
-    if (isMobile) {
-      setTimeRange("7d")
-    }
-  }, [isMobile])
+  const [timeRange, setTimeRange] = React.useState("7d")
 
   const filteredData = chartData.filter((item) => {
     const date = new Date(item.date)
@@ -257,6 +251,7 @@ export function ChartAreaInteractive() {
             />
             <ChartTooltip
               cursor={false}
+              defaultIndex={isMobile ? -1 : 10}
               content={
                 <ChartTooltipContent
                   labelFormatter={(value) => {

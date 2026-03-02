@@ -19,6 +19,25 @@ const EMAIL_OTP_EXPIRES_IN_SECONDS = 5 * 60;
 const AUTH_RATE_LIMIT_WINDOW_SECONDS = 60;
 const AUTH_RATE_LIMIT_MAX_REQUESTS = 100;
 
+const socialProviders = {
+  ...(process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET
+    ? {
+        github: {
+          clientId: process.env.GITHUB_CLIENT_ID,
+          clientSecret: process.env.GITHUB_CLIENT_SECRET,
+        },
+      }
+    : {}),
+  ...(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET
+    ? {
+        google: {
+          clientId: process.env.GOOGLE_CLIENT_ID,
+          clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+        },
+      }
+    : {}),
+};
+
 type SignupBody = {
   role?: string;
   phone?: string;
@@ -213,16 +232,7 @@ export const auth = betterAuth({
     autoSignInAfterVerification: true,
     expiresIn: EMAIL_OTP_EXPIRES_IN_SECONDS,
   },
-  socialProviders: {
-    github: {
-      clientId: process.env.GITHUB_CLIENT_ID ?? "",
-      clientSecret: process.env.GITHUB_CLIENT_SECRET ?? "",
-    },
-    google: {
-      clientId: process.env.GOOGLE_CLIENT_ID ?? "",
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? "",
-    },
-  },
+  socialProviders,
   plugins: [
     nextCookies(),
     emailOTP({

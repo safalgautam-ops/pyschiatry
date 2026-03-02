@@ -124,3 +124,59 @@
     @apply bg-background text-foreground;
   }
 }
+
+@theme inline {
+  --color-destructive-foreground: var(--destructive-foreground);
+}
+
+:root {
+  --destructive-foreground: var(--color-red-700);
+}
+
+.dark {
+  --destructive-foreground: var(--color-red-400);
+}
+
+@layer utilities {
+  .cormorant {
+    font-family: var(--font-cormorant), serif;
+  }
+
+  .atAeroRegular {
+    font-family: var(--font-at-aero-regular), var(--font-geist-sans), sans-serif;
+  }
+
+  .atAeroMedium {
+    font-family: var(--font-at-aero-medium), var(--font-geist-sans), sans-serif;
+  }
+
+  .font-cormorant {
+    font-family: var(--font-cormorant), serif;
+  }
+
+  .font-at-aero-regular {
+    font-family: var(--font-at-aero-regular), var(--font-geist-sans), sans-serif;
+  }
+
+  .font-at-aero-medium {
+    font-family: var(--font-at-aero-medium), var(--font-geist-sans), sans-serif;
+  }
+
+  .calendar-disabled-pattern {
+    background-color: color-mix(in oklab, var(--color-muted) 42%, var(--color-background));
+    background-image: repeating-linear-gradient(
+      -45deg,
+      hsl(0 0% 0% / 0.06) 0 6px,
+      transparent 6px 14px
+    );
+  }
+
+  .dark .calendar-disabled-pattern {
+    background-color: color-mix(in oklab, var(--color-muted) 62%, var(--color-background));
+    background-image: repeating-linear-gradient(
+      -45deg,
+      hsl(0 0% 100% / 0.08) 0 6px,
+      transparent 6px 14px
+    );
+  }
+}

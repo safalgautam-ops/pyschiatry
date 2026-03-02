@@ -1,7 +1,9 @@
 "use client"
 
 import * as React from "react"
-import { type Icon } from "@tabler/icons-react"
+import { IconBrightness, type Icon } from "@tabler/icons-react"
+import { useTheme } from "next-themes"
+import Link from "next/link"
 
 import {
   SidebarGroup,
@@ -10,6 +12,8 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar"
+import { Skeleton } from "@/components/ui/skeleton"
+import { Switch } from "@/components/ui/switch"
 
 export function NavSecondary({
   items,
@@ -21,6 +25,13 @@ export function NavSecondary({
     icon: Icon
   }[]
 } & React.ComponentPropsWithoutRef<typeof SidebarGroup>) {
+  const { resolvedTheme, setTheme } = useTheme()
+  const [mounted, setMounted] = React.useState(false)
+
+  React.useEffect(() => {
+    setMounted(true)
+  }, [])
+
   return (
     <SidebarGroup {...props}>
       <SidebarGroupContent>
@@ -28,13 +39,32 @@ export function NavSecondary({
           {items.map((item) => (
             <SidebarMenuItem key={item.title}>
               <SidebarMenuButton asChild>
-                <a href={item.url}>
+                <Link href={item.url}>
                   <item.icon />
                   <span>{item.title}</span>
-                </a>
+                </Link>
               </SidebarMenuButton>
             </SidebarMenuItem>
           ))}
+          <SidebarMenuItem className="group-data-[collapsible=icon]:hidden">
+            <SidebarMenuButton asChild>
+              <label>
+                <IconBrightness />
+                <span>Dark Mode</span>
+                {mounted ? (
+                  <Switch
+                    className="ml-auto"
+                    checked={resolvedTheme !== "light"}
+                    onCheckedChange={() =>
+                      setTheme(resolvedTheme === "dark" ? "light" : "dark")
+                    }
+                  />
+                ) : (
+                  <Skeleton className="ml-auto h-4 w-8 rounded-full" />
+                )}
+              </label>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
         </SidebarMenu>
       </SidebarGroupContent>
     </SidebarGroup>

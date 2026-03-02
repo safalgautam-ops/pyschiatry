@@ -26,15 +26,16 @@ export const signUp = async (email: string, password: string, name: string) => {
 
 export const signIn = async (email: string, password: string) => {
   try {
-    return await auth.api.signInEmail({
+    const data = await auth.api.signInEmail({
       body: {
         email,
         password,
         callbackURL: "/dashboard",
       },
     });
+    return { success: true as const, data };
   } catch (error) {
-    throw new Error(toErrorMessage(error));
+    return { success: false as const, message: toErrorMessage(error) };
   }
 };
 

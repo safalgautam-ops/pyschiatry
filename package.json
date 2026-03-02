@@ -20,6 +20,7 @@
     "@hookform/resolvers": "^5.2.2",
     "@react-email/components": "^1.0.8",
     "@react-email/render": "^2.0.4",
+    "@remixicon/react": "^4.9.0",
     "@tabler/icons-react": "^3.37.1",
     "@tanstack/react-table": "^8.21.3",
     "better-auth": "^1.4.20",
