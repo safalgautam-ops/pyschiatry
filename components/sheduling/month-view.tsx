@@ -3,27 +3,27 @@
 import {
   addDays,
   eachDayOfInterval,
-  endOfMonth,
   endOfWeek,
   format,
   isSameDay,
-  isSameMonth,
   isToday,
-  startOfMonth,
   startOfWeek,
 } from "date-fns";
 import type React from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 
-import {
-  DefaultStartHour,
-  EventGap,
-  EventHeight,
-} from "@/components/sheduling/constants";
+import { DefaultStartHour, EventGap, EventHeight } from "@/components/sheduling/constants";
 import { useEventVisibility } from "@/hooks/use-event-visibility";
 import { DraggableEvent } from "./draggable-event";
 import { DroppableCell } from "./droppable-cell";
 import { EventItem } from "./event-item";
+import {
+  type CalendarSystem,
+  formatCalendarDayNumber,
+  formatCalendarWeekday,
+  getCalendarMonthBounds,
+  isSameCalendarMonth,
+} from "./calendar-system";
 import type { CalendarEvent } from "./types";
 import {
   getAllEventsForDay,
@@ -36,36 +36,72 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuLabel,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import { cn } from "@/lib/utils";
 
+type HolidayContextAction = "MARK_HOLIDAY" | "CLEAR_HOLIDAY";
+
 interface MonthViewProps {
+  blockedDates?: string[];
+  holidayDates?: string[];
+  disabledDates?: string[];
+  calendarSystem?: CalendarSystem;
   currentDate: Date;
   events: CalendarEvent[];
   onEventSelect: (event: CalendarEvent) => void;
   onEventCreate: (startTime: Date) => void;
+  onHolidayContextAction?: (payload: {
+    dateKey: string;
+    action: HolidayContextAction;
+  }) => void | Promise<void>;
+  onSlotContextAction?: (payload: {
+    event: CalendarEvent;
+    status: "OPEN" | "HELD" | "BLOCKED" | "REMOVE";
+  }) => void | Promise<void>;
+  onSlotBookAction?: (payload: { event: CalendarEvent }) => void | Promise<void>;
 }
 
 export function MonthView({
+  blockedDates = [],
+  holidayDates = [],
+  disabledDates = [],
+  calendarSystem = "gregorian",
   currentDate,
   events,
   onEventSelect,
   onEventCreate,
+  onHolidayContextAction,
+  onSlotContextAction,
+  onSlotBookAction,
 }: MonthViewProps) {
+  const blockedDateSet = useMemo(() => new Set(blockedDates), [blockedDates]);
+  const holidayDateSet = useMemo(() => new Set(holidayDates), [holidayDates]);
+  const disabledDateSet = useMemo(() => new Set(disabledDates), [disabledDates]);
+
   const days = useMemo(() => {
-    const monthStart = startOfMonth(currentDate);
-    const monthEnd = endOfMonth(monthStart);
+    const { monthStart, monthEnd } = getCalendarMonthBounds(
+      currentDate,
+      calendarSystem,
+    );
     const calendarStart = startOfWeek(monthStart, { weekStartsOn: 0 });
     const calendarEnd = endOfWeek(monthEnd, { weekStartsOn: 0 });
 
     return eachDayOfInterval({ end: calendarEnd, start: calendarStart });
-  }, [currentDate]);
+  }, [calendarSystem, currentDate]);
 
   const weekdays = useMemo(() => {
     return Array.from({ length: 7 }).map((_, i) => {
-      const date = addDays(startOfWeek(new Date()), i);
-      return format(date, "EEE");
+      const date = addDays(startOfWeek(new Date(), { weekStartsOn: 0 }), i);
+      return formatCalendarWeekday(date, calendarSystem);
     });
-  }, []);
+  }, [calendarSystem]);
 
   const weeks = useMemo(() => {
     const result = [];
@@ -87,15 +123,10 @@ export function MonthView({
     onEventSelect(event);
   };
 
-  const [isMounted, setIsMounted] = useState(false);
   const { contentRef, getVisibleEventCount } = useEventVisibility({
     eventGap: EventGap,
     eventHeight: EventHeight,
   });
-
-  useEffect(() => {
-    setIsMounted(true);
-  }, []);
 
   return (
     <div className="contents" data-slot="month-view">
@@ -120,162 +151,452 @@ export function MonthView({
 
               const dayEvents = getEventsForDay(events, day);
               const spanningEvents = getSpanningEventsForDay(events, day);
-              const isCurrentMonth = isSameMonth(day, currentDate);
+              const dateKey = format(day, "yyyy-MM-dd");
+              const isCurrentMonth = isSameCalendarMonth(
+                day,
+                currentDate,
+                calendarSystem,
+              );
+              const isBlockedDay = blockedDateSet.has(dateKey);
+              const isManagedHoliday = holidayDateSet.has(dateKey);
+              const isDisabledDay = disabledDateSet.has(dateKey);
               const cellId = `month-cell-${day.toISOString()}`;
               const allDayEvents = [...spanningEvents, ...dayEvents];
               const allEvents = getAllEventsForDay(events, day);
 
               const isReferenceCell = weekIndex === 0 && dayIndex === 0;
-              const visibleCount = isMounted
-                ? getVisibleEventCount(allDayEvents.length)
-                : undefined;
-              const hasMore =
-                visibleCount !== undefined &&
-                allDayEvents.length > visibleCount;
+              const visibleCount = getVisibleEventCount(allDayEvents.length);
+              const hasMore = allDayEvents.length > visibleCount;
               const remainingCount = hasMore
                 ? allDayEvents.length - visibleCount
                 : 0;
+
+              const cellContent = (
+                <DroppableCell
+                  date={day}
+                  id={cellId}
+                  onClick={() => {
+                    if (!isCurrentMonth || isBlockedDay || isDisabledDay) return;
+                    const startTime = new Date(day);
+                    startTime.setHours(DefaultStartHour, 0, 0);
+                    onEventCreate(startTime);
+                  }}
+                >
+                  <div className="mt-1 inline-flex size-6 items-center justify-center rounded-full text-sm group-data-today:bg-primary group-data-today:text-primary-foreground">
+                    {formatCalendarDayNumber(day, calendarSystem)}
+                  </div>
+                  <div
+                    className="min-h-[calc((var(--event-height)+var(--event-gap))*2)] sm:min-h-[calc((var(--event-height)+var(--event-gap))*3)] lg:min-h-[calc((var(--event-height)+var(--event-gap))*4)]"
+                    ref={isReferenceCell ? contentRef : null}
+                  >
+                    {sortEvents(allDayEvents).map((event, index) => {
+                      const eventStart = new Date(event.start);
+                      const eventEnd = new Date(event.end);
+                      const isFirstDay = isSameDay(day, eventStart);
+                      const isLastDay = isSameDay(day, eventEnd);
+
+                      const isHidden = index >= visibleCount;
+
+                      if (!visibleCount) return null;
+
+                      const slotStatus = event.slotStatus;
+                      const isSlotActionBlocked =
+                        isBlockedDay || isManagedHoliday || isDisabledDay;
+                      const slotId = event.slotId;
+                      const isSlotEvent = Boolean(slotId);
+                      const effectiveSlotStatus =
+                        slotId && slotStatus
+                          ? slotStatus
+                          : slotId
+                            ? ("OPEN" as const)
+                            : undefined;
+                      const bookableContextEnabled =
+                        !isSlotActionBlocked &&
+                        Boolean(onSlotBookAction) &&
+                        Boolean(slotId) &&
+                        effectiveSlotStatus === "OPEN";
+                      const slotContextMenuEnabled =
+                        !isSlotActionBlocked &&
+                        Boolean(onSlotContextAction) &&
+                        Boolean(slotId);
+                      const canUpdateSlotStatus = effectiveSlotStatus !== "BOOKED";
+
+                      const eventNode = isSlotEvent ? (
+                        <EventItem
+                          event={event}
+                          isFirstDay={isFirstDay}
+                          isLastDay={isLastDay}
+                          onClick={(e) => handleEventClick(event, e)}
+                          view="month"
+                        />
+                      ) : !isFirstDay ? (
+                        <EventItem
+                          event={event}
+                          isFirstDay={isFirstDay}
+                          isLastDay={isLastDay}
+                          onClick={(e) => handleEventClick(event, e)}
+                          view="month"
+                        >
+                          <div aria-hidden={true} className="invisible">
+                            {!event.allDay && (
+                              <span>
+                                {format(
+                                  new Date(event.start),
+                                  "h:mm",
+                                )}{" "}
+                              </span>
+                            )}
+                            {event.title}
+                          </div>
+                        </EventItem>
+                      ) : (
+                        <DraggableEvent
+                          event={event}
+                          isFirstDay={isFirstDay}
+                          isLastDay={isLastDay}
+                          onClick={(e) => handleEventClick(event, e)}
+                          view="month"
+                        />
+                      );
+
+                      return (
+                        <div
+                          aria-hidden={isHidden ? "true" : undefined}
+                          className="aria-hidden:hidden"
+                          key={
+                            isFirstDay
+                              ? event.id
+                              : `spanning-${event.id}-${day.toISOString().slice(0, 10)}`
+                          }
+                        >
+                          {bookableContextEnabled ? (
+                            <ContextMenu>
+                              <ContextMenuTrigger asChild>
+                                <div>
+                                  {eventNode}
+                                </div>
+                              </ContextMenuTrigger>
+                              <ContextMenuContent>
+                                <ContextMenuLabel>{event.title}</ContextMenuLabel>
+                                <ContextMenuSeparator />
+                                <ContextMenuItem
+                                  onSelect={() =>
+                                    void onSlotBookAction?.({
+                                      event: { ...event, slotId },
+                                    })
+                                  }
+                                >
+                                  Book Appointment
+                                </ContextMenuItem>
+                              </ContextMenuContent>
+                            </ContextMenu>
+                          ) : slotContextMenuEnabled ? (
+                            <ContextMenu>
+                              <ContextMenuTrigger asChild>
+                                <div>
+                                  {eventNode}
+                                </div>
+                              </ContextMenuTrigger>
+                              <ContextMenuContent>
+                                <ContextMenuLabel>{event.title}</ContextMenuLabel>
+                                <ContextMenuSeparator />
+                                <ContextMenuItem
+                                  disabled={!canUpdateSlotStatus || effectiveSlotStatus === "OPEN"}
+                                  onSelect={() =>
+                                    void onSlotContextAction?.({
+                                      event: { ...event, slotId },
+                                      status: "OPEN",
+                                    })
+                                  }
+                                >
+                                  Set Open
+                                </ContextMenuItem>
+                                <ContextMenuItem
+                                  disabled={!canUpdateSlotStatus || effectiveSlotStatus === "HELD"}
+                                  onSelect={() =>
+                                    void onSlotContextAction?.({
+                                      event: { ...event, slotId },
+                                      status: "HELD",
+                                    })
+                                  }
+                                >
+                                  Set Reserved
+                                </ContextMenuItem>
+                                <ContextMenuItem
+                                  disabled={!canUpdateSlotStatus || effectiveSlotStatus === "BLOCKED"}
+                                  onSelect={() =>
+                                    void onSlotContextAction?.({
+                                      event: { ...event, slotId },
+                                      status: "BLOCKED",
+                                    })
+                                  }
+                                >
+                                  Set Blocked
+                                </ContextMenuItem>
+                                <ContextMenuSeparator />
+                                <ContextMenuItem
+                                  disabled={!canUpdateSlotStatus}
+                                  onSelect={() =>
+                                    void onSlotContextAction?.({
+                                      event: { ...event, slotId },
+                                      status: "REMOVE",
+                                    })
+                                  }
+                                >
+                                  Remove Slot
+                                </ContextMenuItem>
+                              </ContextMenuContent>
+                            </ContextMenu>
+                          ) : (
+                            eventNode
+                          )}
+                        </div>
+                      );
+                    })}
+
+                    {hasMore && (
+                      <Popover modal>
+                        <PopoverTrigger asChild>
+                          <button
+                            className="mt-(--event-gap) flex h-(--event-height) w-full select-none items-center overflow-hidden px-1 text-left text-[10px] text-muted-foreground outline-none backdrop-blur-md transition hover:bg-muted/50 hover:text-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 sm:px-2 sm:text-xs"
+                            onClick={(e) => e.stopPropagation()}
+                            type="button"
+                          >
+                            <span>
+                              + {remainingCount}{" "}
+                              <span className="max-sm:sr-only">more</span>
+                            </span>
+                          </button>
+                        </PopoverTrigger>
+                        <PopoverContent
+                          align="center"
+                          className="max-w-52 p-3"
+                          style={
+                            {
+                              "--event-height": `${EventHeight}px`,
+                            } as Record<string, string>
+                          }
+                        >
+                          <div className="space-y-2">
+                            <div className="font-medium text-sm">
+                              {calendarSystem === "nepali"
+                                ? `${formatCalendarWeekday(
+                                    day,
+                                    calendarSystem,
+                                  )} ${formatCalendarDayNumber(
+                                    day,
+                                    calendarSystem,
+                                  )}`
+                                : format(day, "EEE d")}
+                            </div>
+                            <div className="space-y-1">
+                              {sortEvents(allEvents).map((event) => {
+                                const eventStart = new Date(event.start);
+                                const eventEnd = new Date(event.end);
+                                const isFirstDay = isSameDay(day, eventStart);
+                                const isLastDay = isSameDay(day, eventEnd);
+                                const slotStatus = event.slotStatus;
+                                const slotId = event.slotId;
+                                const effectiveSlotStatus =
+                                  slotId && slotStatus
+                                    ? slotStatus
+                                    : slotId
+                                      ? ("OPEN" as const)
+                                      : undefined;
+                                const isSlotActionBlocked =
+                                  isBlockedDay || isManagedHoliday || isDisabledDay;
+                                const bookableContextEnabled =
+                                  !isSlotActionBlocked &&
+                                  Boolean(onSlotBookAction) &&
+                                  Boolean(slotId) &&
+                                  effectiveSlotStatus === "OPEN";
+                                const slotContextMenuEnabled =
+                                  !isSlotActionBlocked &&
+                                  Boolean(onSlotContextAction) &&
+                                  Boolean(slotId);
+                                const canUpdateSlotStatus = effectiveSlotStatus !== "BOOKED";
+
+                                const eventNode = (
+                                  <EventItem
+                                    event={event}
+                                    isFirstDay={isFirstDay}
+                                    isLastDay={isLastDay}
+                                    key={event.id}
+                                    onClick={(e) =>
+                                      handleEventClick(event, e)
+                                    }
+                                    view="month"
+                                  />
+                                );
+
+                                if (bookableContextEnabled) {
+                                  return (
+                                    <ContextMenu key={event.id}>
+                                      <ContextMenuTrigger asChild>
+                                        <div>
+                                          {eventNode}
+                                        </div>
+                                      </ContextMenuTrigger>
+                                      <ContextMenuContent>
+                                        <ContextMenuLabel>{event.title}</ContextMenuLabel>
+                                        <ContextMenuSeparator />
+                                        <ContextMenuItem
+                                          onSelect={() =>
+                                            void onSlotBookAction?.({
+                                              event: { ...event, slotId },
+                                            })
+                                          }
+                                        >
+                                          Book Appointment
+                                        </ContextMenuItem>
+                                      </ContextMenuContent>
+                                    </ContextMenu>
+                                  );
+                                }
+
+                                if (slotContextMenuEnabled) {
+                                  return (
+                                    <ContextMenu key={event.id}>
+                                      <ContextMenuTrigger asChild>
+                                        <div>
+                                          {eventNode}
+                                        </div>
+                                      </ContextMenuTrigger>
+                                      <ContextMenuContent>
+                                        <ContextMenuLabel>{event.title}</ContextMenuLabel>
+                                        <ContextMenuSeparator />
+                                        <ContextMenuItem
+                                          disabled={!canUpdateSlotStatus || effectiveSlotStatus === "OPEN"}
+                                          onSelect={() =>
+                                            void onSlotContextAction?.({
+                                              event: { ...event, slotId },
+                                              status: "OPEN",
+                                            })
+                                          }
+                                        >
+                                          Set Open
+                                        </ContextMenuItem>
+                                        <ContextMenuItem
+                                          disabled={!canUpdateSlotStatus || effectiveSlotStatus === "HELD"}
+                                          onSelect={() =>
+                                            void onSlotContextAction?.({
+                                              event: { ...event, slotId },
+                                              status: "HELD",
+                                            })
+                                          }
+                                        >
+                                          Set Reserved
+                                        </ContextMenuItem>
+                                        <ContextMenuItem
+                                          disabled={!canUpdateSlotStatus || effectiveSlotStatus === "BLOCKED"}
+                                          onSelect={() =>
+                                            void onSlotContextAction?.({
+                                              event: { ...event, slotId },
+                                              status: "BLOCKED",
+                                            })
+                                          }
+                                        >
+                                          Set Blocked
+                                        </ContextMenuItem>
+                                        <ContextMenuSeparator />
+                                        <ContextMenuItem
+                                          disabled={!canUpdateSlotStatus}
+                                          onSelect={() =>
+                                            void onSlotContextAction?.({
+                                              event: { ...event, slotId },
+                                              status: "REMOVE",
+                                            })
+                                          }
+                                        >
+                                          Remove Slot
+                                        </ContextMenuItem>
+                                      </ContextMenuContent>
+                                    </ContextMenu>
+                                  );
+                                }
+
+                                return (
+                                  <div key={event.id}>{eventNode}</div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </PopoverContent>
+                      </Popover>
+                    )}
+                  </div>
+                </DroppableCell>
+              );
 
               return (
                 <div
                   className={cn(
                     "group border-border/70 border-r border-b last:border-r-0",
-                    !isCurrentMonth &&
+                    (!isCurrentMonth || isDisabledDay) &&
                       "calendar-disabled-pattern text-muted-foreground/70",
+                    isCurrentMonth &&
+                      isBlockedDay &&
+                      !isDisabledDay &&
+                      "calendar-holiday-pattern text-red-900/75 dark:text-red-200/80",
                   )}
                   data-outside-cell={!isCurrentMonth || undefined}
+                  data-disabled-cell={isDisabledDay || undefined}
                   data-today={isToday(day) || undefined}
                   key={day.toString()}
                 >
-                  <DroppableCell
-                    date={day}
-                    id={cellId}
-                    onClick={() => {
-                      if (!isCurrentMonth) return;
-                      const startTime = new Date(day);
-                      startTime.setHours(DefaultStartHour, 0, 0);
-                      onEventCreate(startTime);
-                    }}
-                  >
-                    <div className="mt-1 inline-flex size-6 items-center justify-center rounded-full text-sm group-data-today:bg-primary group-data-today:text-primary-foreground">
-                      {format(day, "d")}
-                    </div>
-                    <div
-                      className="min-h-[calc((var(--event-height)+var(--event-gap))*2)] sm:min-h-[calc((var(--event-height)+var(--event-gap))*3)] lg:min-h-[calc((var(--event-height)+var(--event-gap))*4)]"
-                      ref={isReferenceCell ? contentRef : null}
-                    >
-                      {sortEvents(allDayEvents).map((event, index) => {
-                        const eventStart = new Date(event.start);
-                        const eventEnd = new Date(event.end);
-                        const isFirstDay = isSameDay(day, eventStart);
-                        const isLastDay = isSameDay(day, eventEnd);
-
-                        const isHidden =
-                          isMounted && visibleCount && index >= visibleCount;
-
-                        if (!visibleCount) return null;
-
-                        if (!isFirstDay) {
-                          return (
-                            <div
-                              aria-hidden={isHidden ? "true" : undefined}
-                              className="aria-hidden:hidden"
-                              key={`spanning-${event.id}-${day.toISOString().slice(0, 10)}`}
+                  {onHolidayContextAction ||
+                  onSlotBookAction ||
+                  onSlotContextAction ? (
+                    <ContextMenu>
+                      <ContextMenuTrigger asChild>
+                        <div>{cellContent}</div>
+                      </ContextMenuTrigger>
+                      <ContextMenuContent>
+                        <ContextMenuLabel>
+                          {calendarSystem === "nepali"
+                            ? `${formatCalendarWeekday(
+                                day,
+                                calendarSystem,
+                              )} ${formatCalendarDayNumber(day, calendarSystem)}`
+                            : format(day, "EEE, MMM d, yyyy")}
+                        </ContextMenuLabel>
+                        <ContextMenuSeparator />
+                        {onHolidayContextAction ? (
+                          isManagedHoliday ? (
+                            <ContextMenuItem
+                              disabled={isDisabledDay}
+                              onSelect={() =>
+                                void onHolidayContextAction({
+                                  dateKey,
+                                  action: "CLEAR_HOLIDAY",
+                                })
+                              }
                             >
-                              <EventItem
-                                event={event}
-                                isFirstDay={isFirstDay}
-                                isLastDay={isLastDay}
-                                onClick={(e) => handleEventClick(event, e)}
-                                view="month"
-                              >
-                                <div aria-hidden={true} className="invisible">
-                                  {!event.allDay && (
-                                    <span>
-                                      {format(
-                                        new Date(event.start),
-                                        "h:mm",
-                                      )}{" "}
-                                    </span>
-                                  )}
-                                  {event.title}
-                                </div>
-                              </EventItem>
-                            </div>
-                          );
-                        }
-
-                        return (
-                          <div
-                            aria-hidden={isHidden ? "true" : undefined}
-                            className="aria-hidden:hidden"
-                            key={event.id}
-                          >
-                            <DraggableEvent
-                              event={event}
-                              isFirstDay={isFirstDay}
-                              isLastDay={isLastDay}
-                              onClick={(e) => handleEventClick(event, e)}
-                              view="month"
-                            />
-                          </div>
-                        );
-                      })}
-
-                      {hasMore && (
-                        <Popover modal>
-                          <PopoverTrigger asChild>
-                            <button
-                              className="mt-(--event-gap) flex h-(--event-height) w-full select-none items-center overflow-hidden px-1 text-left text-[10px] text-muted-foreground outline-none backdrop-blur-md transition hover:bg-muted/50 hover:text-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 sm:px-2 sm:text-xs"
-                              onClick={(e) => e.stopPropagation()}
-                              type="button"
+                              Remove Holiday
+                            </ContextMenuItem>
+                          ) : (
+                            <ContextMenuItem
+                              disabled={isDisabledDay}
+                              onSelect={() =>
+                                void onHolidayContextAction({
+                                  dateKey,
+                                  action: "MARK_HOLIDAY",
+                                })
+                              }
                             >
-                              <span>
-                                + {remainingCount}{" "}
-                                <span className="max-sm:sr-only">more</span>
-                              </span>
-                            </button>
-                          </PopoverTrigger>
-                          <PopoverContent
-                            align="center"
-                            className="max-w-52 p-3"
-                            style={
-                              {
-                                "--event-height": `${EventHeight}px`,
-                              } as Record<string, string>
-                            }
-                          >
-                            <div className="space-y-2">
-                              <div className="font-medium text-sm">
-                                {format(day, "EEE d")}
-                              </div>
-                              <div className="space-y-1">
-                                {sortEvents(allEvents).map((event) => {
-                                  const eventStart = new Date(event.start);
-                                  const eventEnd = new Date(event.end);
-                                  const isFirstDay = isSameDay(day, eventStart);
-                                  const isLastDay = isSameDay(day, eventEnd);
-
-                                  return (
-                                    <EventItem
-                                      event={event}
-                                      isFirstDay={isFirstDay}
-                                      isLastDay={isLastDay}
-                                      key={event.id}
-                                      onClick={(e) =>
-                                        handleEventClick(event, e)
-                                      }
-                                      view="month"
-                                    />
-                                  );
-                                })}
-                              </div>
-                            </div>
-                          </PopoverContent>
-                        </Popover>
-                      )}
-                    </div>
-                  </DroppableCell>
+                              Mark as Holiday
+                            </ContextMenuItem>
+                          )
+                        ) : (
+                          <ContextMenuItem disabled>
+                            No day actions
+                          </ContextMenuItem>
+                        )}
+                      </ContextMenuContent>
+                    </ContextMenu>
+                  ) : (
+                    cellContent
+                  )}
                 </div>
               );
             })}

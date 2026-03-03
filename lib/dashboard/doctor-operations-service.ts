@@ -29,6 +29,8 @@ const CHAT_ELIGIBLE_APPOINTMENT_STATUSES = [
   "CONFIRMED",
   "COMPLETED",
 ] as const;
+const CALENDAR_SLOT_WINDOW_DAYS = 90;
+const CALENDAR_SLOT_FETCH_LIMIT = 250;
 const REPORT_WRAP_SECRET =
   process.env.REPORT_DEK_WRAP_SECRET ??
   process.env.USER_KEYS_ENCRYPTION_SECRET ??
@@ -350,7 +352,7 @@ export async function getDoctorWorkspaceData(
   const doctorUserId = await requireDoctor(currentUser);
   await syncDoctorRoomsFromBookedAppointments(doctorUserId);
   const now = new Date();
-  const maxDate = addMinutes(now, 60 * 24 * 60);
+  const maxDate = addMinutes(now, 60 * 24 * CALENDAR_SLOT_WINDOW_DAYS);
 
   const [patients, staffMembers, ruleRows, exceptionRows, slots, appts, rooms, reports, outgoing, incoming, doctors, counts] =
     await Promise.all([
@@ -416,7 +418,7 @@ export async function getDoctorWorkspaceData(
           ),
         )
         .orderBy(asc(appointmentSlots.startsAt))
-        .limit(80),
+        .limit(CALENDAR_SLOT_FETCH_LIMIT),
       db
         .select({
           id: appointments.id,
@@ -688,6 +690,32 @@ export async function createScheduleRule(
   });
 }
 
+export async function applyNepalDefaultWeeklySchedule(
+  currentUser: AuthenticatedUser,
+  input: { startTime: string; endTime: string },
+) {
+  const doctorUserId = await requireDoctor(currentUser);
+  if (parseTimeToMinutes(input.startTime) >= parseTimeToMinutes(input.endTime)) {
+    throw new Error("End time must be after start time.");
+  }
+
+  await db.transaction(async (tx) => {
+    await tx
+      .delete(scheduleRules)
+      .where(eq(scheduleRules.doctorUserId, doctorUserId));
+
+    await tx.insert(scheduleRules).values(
+      [0, 1, 2, 3, 4, 5].map((dayOfWeek) => ({
+        id: crypto.randomUUID(),
+        doctorUserId,
+        dayOfWeek,
+        startTime: input.startTime,
+        endTime: input.endTime,
+      })),
+    );
+  });
+}
+
 export async function deleteScheduleRule(
   currentUser: AuthenticatedUser,
   scheduleRuleId: string,
@@ -742,6 +770,191 @@ export async function createScheduleException(
     endTime: input.type === "CUSTOM_HOURS" ? input.endTime ?? null : null,
     reason: input.reason?.trim() || null,
   });
+}
+
+export async function deleteScheduleException(
+  currentUser: AuthenticatedUser,
+  scheduleExceptionId: string,
+) {
+  const doctorUserId = await requireDoctor(currentUser);
+  const [exception] = await db
+    .select({
+      id: scheduleExceptions.id,
+      doctorUserId: scheduleExceptions.doctorUserId,
+    })
+    .from(scheduleExceptions)
+    .where(eq(scheduleExceptions.id, scheduleExceptionId))
+    .limit(1);
+
+  if (!exception || exception.doctorUserId !== doctorUserId) {
+    throw new Error("Schedule exception not found.");
+  }
+
+  await db
+    .delete(scheduleExceptions)
+    .where(eq(scheduleExceptions.id, scheduleExceptionId));
+}
+
+export async function markDoctorHolidayByDate(
+  currentUser: AuthenticatedUser,
+  input: { date: string; reason?: string },
+) {
+  const doctorUserId = await requireDoctor(currentUser);
+  if (!input.date) throw new Error("Date is required.");
+
+  const parsedDate = new Date(`${input.date}T00:00:00`);
+  if (Number.isNaN(parsedDate.getTime())) {
+    throw new Error("Invalid holiday date.");
+  }
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  if (parsedDate < today) {
+    throw new Error("Past dates cannot be changed.");
+  }
+
+  const [existing] = await db
+    .select({
+      id: scheduleExceptions.id,
+    })
+    .from(scheduleExceptions)
+    .where(
+      and(
+        eq(scheduleExceptions.doctorUserId, doctorUserId),
+        eq(scheduleExceptions.date, parsedDate),
+        eq(scheduleExceptions.type, "OFF"),
+      ),
+    )
+    .limit(1);
+
+  if (existing) {
+    await db
+      .update(scheduleExceptions)
+      .set({
+        reason: input.reason?.trim() || null,
+      })
+      .where(eq(scheduleExceptions.id, existing.id));
+    return;
+  }
+
+  await db.insert(scheduleExceptions).values({
+    id: crypto.randomUUID(),
+    doctorUserId,
+    date: parsedDate,
+    type: "OFF",
+    startTime: null,
+    endTime: null,
+    reason: input.reason?.trim() || null,
+  });
+}
+
+export async function clearDoctorHolidayByDate(
+  currentUser: AuthenticatedUser,
+  input: { date: string },
+) {
+  const doctorUserId = await requireDoctor(currentUser);
+  if (!input.date) throw new Error("Date is required.");
+
+  const parsedDate = new Date(`${input.date}T00:00:00`);
+  if (Number.isNaN(parsedDate.getTime())) {
+    throw new Error("Invalid holiday date.");
+  }
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  if (parsedDate < today) {
+    throw new Error("Past dates cannot be changed.");
+  }
+
+  await db
+    .delete(scheduleExceptions)
+    .where(
+      and(
+        eq(scheduleExceptions.doctorUserId, doctorUserId),
+        eq(scheduleExceptions.date, parsedDate),
+        eq(scheduleExceptions.type, "OFF"),
+      ),
+    );
+}
+
+export async function setDoctorSlotStatus(
+  currentUser: AuthenticatedUser,
+  input: { slotId: string; status: "OPEN" | "HELD" | "BLOCKED" },
+) {
+  const doctorUserId = await requireDoctor(currentUser);
+
+  const [slot] = await db
+    .select({
+      id: appointmentSlots.id,
+      doctorUserId: appointmentSlots.doctorUserId,
+      status: appointmentSlots.status,
+      startsAt: appointmentSlots.startsAt,
+    })
+    .from(appointmentSlots)
+    .where(eq(appointmentSlots.id, input.slotId))
+    .limit(1);
+
+  if (!slot || slot.doctorUserId !== doctorUserId) {
+    throw new Error("Slot not found in this doctor tenant.");
+  }
+  if (slot.status === "BOOKED") {
+    throw new Error("Booked slots cannot be changed.");
+  }
+  if (slot.startsAt < new Date()) {
+    throw new Error("Past slots cannot be changed.");
+  }
+
+  await db
+    .update(appointmentSlots)
+    .set({
+      status: input.status,
+      holdToken: input.status === "HELD" ? (slot.id || crypto.randomUUID()) : null,
+      holdExpiresAt:
+        input.status === "HELD"
+          ? new Date(Date.now() + 1000 * 60 * 30)
+          : null,
+    })
+    .where(eq(appointmentSlots.id, input.slotId));
+}
+
+export async function deleteDoctorSlot(
+  currentUser: AuthenticatedUser,
+  input: { slotId: string },
+) {
+  const doctorUserId = await requireDoctor(currentUser);
+
+  const [slot] = await db
+    .select({
+      id: appointmentSlots.id,
+      doctorUserId: appointmentSlots.doctorUserId,
+      status: appointmentSlots.status,
+      startsAt: appointmentSlots.startsAt,
+    })
+    .from(appointmentSlots)
+    .where(eq(appointmentSlots.id, input.slotId))
+    .limit(1);
+
+  if (!slot || slot.doctorUserId !== doctorUserId) {
+    throw new Error("Slot not found in this doctor tenant.");
+  }
+  if (slot.status === "BOOKED") {
+    throw new Error("Booked slots cannot be removed.");
+  }
+  if (slot.startsAt < new Date()) {
+    throw new Error("Past slots cannot be removed.");
+  }
+
+  const [appointmentHistory] = await db
+    .select({
+      id: appointments.id,
+    })
+    .from(appointments)
+    .where(eq(appointments.slotId, input.slotId))
+    .limit(1);
+
+  if (appointmentHistory) {
+    throw new Error("Slot cannot be removed because it has appointment history.");
+  }
+
+  await db.delete(appointmentSlots).where(eq(appointmentSlots.id, input.slotId));
 }
 
 export async function createManualSlot(
@@ -1175,7 +1388,7 @@ export async function getPatientScheduleData(
 ): Promise<PatientScheduleData> {
   const patientUserId = await requirePatient(currentUser);
   const now = new Date();
-  const horizon = addMinutes(now, 60 * 24 * 60);
+  const horizon = addMinutes(now, 60 * 24 * CALENDAR_SLOT_WINDOW_DAYS);
 
   const doctorLinks = await db
     .select({
@@ -1193,36 +1406,28 @@ export async function getPatientScheduleData(
     )
     .orderBy(asc(user.name));
 
-  const scopedDoctorIds = doctorLinks.map((row) => row.doctorUserId);
-  if (scopedDoctorIds.length === 0) {
-    return {
-      doctorLinks: [],
-      availableSlots: [],
-      bookedAppointments: [],
-    };
-  }
+  const availableSlotsPromise = db
+    .select({
+      slotId: appointmentSlots.id,
+      doctorUserId: appointmentSlots.doctorUserId,
+      doctorName: user.name,
+      startsAt: appointmentSlots.startsAt,
+      endsAt: appointmentSlots.endsAt,
+    })
+    .from(appointmentSlots)
+    .innerJoin(user, eq(appointmentSlots.doctorUserId, user.id))
+    .where(
+      and(
+        eq(appointmentSlots.status, "OPEN"),
+        gte(appointmentSlots.startsAt, now),
+        lte(appointmentSlots.startsAt, horizon),
+      ),
+    )
+    .orderBy(asc(appointmentSlots.startsAt))
+    .limit(CALENDAR_SLOT_FETCH_LIMIT);
 
   const [availableSlots, bookedAppointments] = await Promise.all([
-    db
-      .select({
-        slotId: appointmentSlots.id,
-        doctorUserId: appointmentSlots.doctorUserId,
-        doctorName: user.name,
-        startsAt: appointmentSlots.startsAt,
-        endsAt: appointmentSlots.endsAt,
-      })
-      .from(appointmentSlots)
-      .innerJoin(user, eq(appointmentSlots.doctorUserId, user.id))
-      .where(
-        and(
-          inArray(appointmentSlots.doctorUserId, scopedDoctorIds),
-          eq(appointmentSlots.status, "OPEN"),
-          gte(appointmentSlots.startsAt, now),
-          lte(appointmentSlots.startsAt, horizon),
-        ),
-      )
-      .orderBy(asc(appointmentSlots.startsAt))
-      .limit(300),
+    availableSlotsPromise,
     db
       .select({
         appointmentId: appointments.id,
@@ -1273,10 +1478,70 @@ export async function bookPatientAppointmentSlot(
   if (slot.status !== "OPEN") throw new Error("This slot is no longer available.");
   if (slot.startsAt < new Date()) throw new Error("Cannot book a past slot.");
 
-  await ensureLinkedPatient(slot.doctorUserId, patientUserId);
+  const [existingLink] = await db
+    .select({
+      id: doctorPatients.id,
+      status: doctorPatients.status,
+    })
+    .from(doctorPatients)
+    .where(
+      and(
+        eq(doctorPatients.doctorUserId, slot.doctorUserId),
+        eq(doctorPatients.patientUserId, patientUserId),
+      ),
+    )
+    .limit(1);
+
+  if (
+    existingLink &&
+    !ACTIVE_PATIENT_LINK_STATUSES.includes(
+      existingLink.status as (typeof ACTIVE_PATIENT_LINK_STATUSES)[number],
+    )
+  ) {
+    throw new Error("You are not allowed to book with this doctor.");
+  }
 
   try {
     await db.transaction(async (tx) => {
+      if (!existingLink) {
+        await tx
+          .insert(doctorPatients)
+          .values({
+            id: crypto.randomUUID(),
+            doctorUserId: slot.doctorUserId,
+            patientUserId,
+            status: "ACTIVE",
+            createdAt: new Date(),
+          })
+          .onDuplicateKeyUpdate({
+            set: {
+              id: sql`${doctorPatients.id}`,
+            },
+          });
+      }
+
+      const [currentLink] = await tx
+        .select({
+          status: doctorPatients.status,
+        })
+        .from(doctorPatients)
+        .where(
+          and(
+            eq(doctorPatients.doctorUserId, slot.doctorUserId),
+            eq(doctorPatients.patientUserId, patientUserId),
+          ),
+        )
+        .limit(1);
+
+      if (
+        !currentLink ||
+        !ACTIVE_PATIENT_LINK_STATUSES.includes(
+          currentLink.status as (typeof ACTIVE_PATIENT_LINK_STATUSES)[number],
+        )
+      ) {
+        throw new Error("You are not allowed to book with this doctor.");
+      }
+
       await tx.insert(appointments).values({
         id: crypto.randomUUID(),
         slotId: slot.slotId,

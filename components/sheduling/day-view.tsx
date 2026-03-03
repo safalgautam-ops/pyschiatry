@@ -25,13 +25,41 @@ import { DroppableCell } from "./droppable-cell";
 import { EventItem } from "./event-item";
 import type { CalendarEvent } from "./types";
 import { isMultiDayEvent } from "./utils";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuLabel,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import { cn } from "@/lib/utils";
+import {
+  type CalendarSystem,
+  formatCalendarDayNumber,
+  formatCalendarWeekday,
+} from "./calendar-system";
+
+type HolidayContextAction = "MARK_HOLIDAY" | "CLEAR_HOLIDAY";
 
 interface DayViewProps {
+  blockedDates?: string[];
+  holidayDates?: string[];
+  disabledDates?: string[];
+  calendarSystem?: CalendarSystem;
   currentDate: Date;
   events: CalendarEvent[];
   onEventSelect: (event: CalendarEvent) => void;
   onEventCreate: (startTime: Date) => void;
+  onHolidayContextAction?: (payload: {
+    dateKey: string;
+    action: HolidayContextAction;
+  }) => void | Promise<void>;
+  onSlotContextAction?: (payload: {
+    event: CalendarEvent;
+    status: "OPEN" | "HELD" | "BLOCKED" | "REMOVE";
+  }) => void | Promise<void>;
+  onSlotBookAction?: (payload: { event: CalendarEvent }) => void | Promise<void>;
 }
 
 interface PositionedEvent {
@@ -44,11 +72,26 @@ interface PositionedEvent {
 }
 
 export function DayView({
+  blockedDates = [],
+  holidayDates = [],
+  disabledDates = [],
+  calendarSystem = "gregorian",
   currentDate,
   events,
   onEventSelect,
   onEventCreate,
+  onHolidayContextAction,
+  onSlotContextAction,
+  onSlotBookAction,
 }: DayViewProps) {
+  const blockedDateSet = useMemo(() => new Set(blockedDates), [blockedDates]);
+  const holidayDateSet = useMemo(() => new Set(holidayDates), [holidayDates]);
+  const disabledDateSet = useMemo(() => new Set(disabledDates), [disabledDates]);
+  const dateKey = format(currentDate, "yyyy-MM-dd");
+  const isBlockedDay = blockedDateSet.has(dateKey);
+  const isManagedHoliday = holidayDateSet.has(dateKey);
+  const isDisabledDay = disabledDateSet.has(dateKey);
+
   const hours = useMemo(() => {
     const dayStart = startOfDay(currentDate);
     return eachHourOfInterval({
@@ -186,6 +229,168 @@ export function DayView({
     onEventSelect(event);
   };
 
+  const wrapEventContextMenu = (
+    event: CalendarEvent,
+    eventNode: React.ReactNode,
+  ) => {
+    const isSlotActionBlocked = isBlockedDay || isManagedHoliday || isDisabledDay;
+    const slotStatus = event.slotStatus;
+    const slotId = event.slotId;
+    const effectiveSlotStatus =
+      slotId && slotStatus ? slotStatus : slotId ? ("OPEN" as const) : undefined;
+    const bookableContextEnabled =
+      !isSlotActionBlocked &&
+      Boolean(onSlotBookAction) &&
+      Boolean(slotId) &&
+      effectiveSlotStatus === "OPEN";
+    const slotContextMenuEnabled =
+      !isSlotActionBlocked &&
+      Boolean(onSlotContextAction) &&
+      Boolean(slotId);
+    const canUpdateSlotStatus = effectiveSlotStatus !== "BOOKED";
+
+    if (bookableContextEnabled) {
+      return (
+        <ContextMenu>
+          <ContextMenuTrigger asChild>
+            <div>
+              {eventNode}
+            </div>
+          </ContextMenuTrigger>
+          <ContextMenuContent>
+            <ContextMenuLabel>{event.title}</ContextMenuLabel>
+            <ContextMenuSeparator />
+            <ContextMenuItem
+              onSelect={() =>
+                void onSlotBookAction?.({
+                  event: { ...event, slotId },
+                })
+              }
+            >
+              Book Appointment
+            </ContextMenuItem>
+          </ContextMenuContent>
+        </ContextMenu>
+      );
+    }
+
+    if (!slotContextMenuEnabled) {
+      return eventNode;
+    }
+
+    return (
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <div>
+            {eventNode}
+          </div>
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuLabel>{event.title}</ContextMenuLabel>
+          <ContextMenuSeparator />
+          <ContextMenuItem
+            disabled={!canUpdateSlotStatus || effectiveSlotStatus === "OPEN"}
+            onSelect={() =>
+              void onSlotContextAction?.({
+                event: { ...event, slotId },
+                status: "OPEN",
+              })
+            }
+          >
+            Set Open
+          </ContextMenuItem>
+          <ContextMenuItem
+            disabled={!canUpdateSlotStatus || effectiveSlotStatus === "HELD"}
+            onSelect={() =>
+              void onSlotContextAction?.({
+                event: { ...event, slotId },
+                status: "HELD",
+              })
+            }
+          >
+            Set Reserved
+          </ContextMenuItem>
+          <ContextMenuItem
+            disabled={!canUpdateSlotStatus || effectiveSlotStatus === "BLOCKED"}
+            onSelect={() =>
+              void onSlotContextAction?.({
+                event: { ...event, slotId },
+                status: "BLOCKED",
+              })
+            }
+          >
+            Set Blocked
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem
+            disabled={!canUpdateSlotStatus}
+            onSelect={() =>
+              void onSlotContextAction?.({
+                event: { ...event, slotId },
+                status: "REMOVE",
+              })
+            }
+          >
+            Remove Slot
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
+    );
+  };
+
+  const wrapDayContextMenu = (node: React.ReactNode) => {
+    if (!onHolidayContextAction && !onSlotBookAction && !onSlotContextAction) {
+      return node;
+    }
+    return (
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <div>{node}</div>
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuLabel>
+            {calendarSystem === "nepali"
+              ? `${formatCalendarWeekday(
+                  currentDate,
+                  calendarSystem,
+                )} ${formatCalendarDayNumber(currentDate, calendarSystem)}`
+              : format(currentDate, "EEE, MMM d, yyyy")}
+          </ContextMenuLabel>
+          <ContextMenuSeparator />
+          {onHolidayContextAction ? (
+            isManagedHoliday ? (
+              <ContextMenuItem
+                disabled={isDisabledDay}
+                onSelect={() =>
+                  void onHolidayContextAction({
+                    dateKey,
+                    action: "CLEAR_HOLIDAY",
+                  })
+                }
+              >
+                Remove Holiday
+              </ContextMenuItem>
+            ) : (
+              <ContextMenuItem
+                disabled={isDisabledDay}
+                onSelect={() =>
+                  void onHolidayContextAction({
+                    dateKey,
+                    action: "MARK_HOLIDAY",
+                  })
+                }
+              >
+                Mark as Holiday
+              </ContextMenuItem>
+            )
+          ) : (
+            <ContextMenuItem disabled>No day actions</ContextMenuItem>
+          )}
+        </ContextMenuContent>
+      </ContextMenu>
+    );
+  };
+
   const showAllDaySection = allDayEvents.length > 0;
   const { currentTimePosition, currentTimeVisible } = useCurrentTimeIndicator(
     currentDate,
@@ -202,14 +407,22 @@ export function DayView({
                 All day
               </span>
             </div>
-            <div className="relative border-border/70 border-r p-1 last:border-r-0">
+            <div
+              className={cn(
+                "relative border-border/70 border-r p-1 last:border-r-0",
+                isDisabledDay && "calendar-disabled-pattern text-muted-foreground/70",
+                !isDisabledDay &&
+                  isBlockedDay &&
+                  "calendar-holiday-pattern text-red-900/75 dark:text-red-200/80",
+              )}
+            >
               {allDayEvents.map((event) => {
                 const eventStart = new Date(event.start);
                 const eventEnd = new Date(event.end);
                 const isFirstDay = isSameDay(currentDate, eventStart);
                 const isLastDay = isSameDay(currentDate, eventEnd);
 
-                return (
+                const node = (
                   <EventItem
                     event={event}
                     isFirstDay={isFirstDay}
@@ -222,6 +435,7 @@ export function DayView({
                     <div>{event.title}</div>
                   </EventItem>
                 );
+                return <div key={`spanning-${event.id}`}>{wrapEventContextMenu(event, node)}</div>;
               })}
             </div>
           </div>
@@ -244,7 +458,16 @@ export function DayView({
           ))}
         </div>
 
-        <div className="relative">
+        {wrapDayContextMenu(
+          <div
+            className={cn(
+              "relative",
+              isDisabledDay && "calendar-disabled-pattern text-muted-foreground/70",
+              !isDisabledDay &&
+                isBlockedDay &&
+                "calendar-holiday-pattern text-red-900/75 dark:text-red-200/80",
+            )}
+          >
           {/* Positioned events */}
           {positionedEvents.map((positionedEvent) => (
             <div
@@ -259,13 +482,25 @@ export function DayView({
               }}
             >
               <div className="size-full">
-                <DraggableEvent
-                  event={positionedEvent.event}
-                  height={positionedEvent.height}
-                  onClick={(e) => handleEventClick(positionedEvent.event, e)}
-                  showTime
-                  view="day"
-                />
+                {wrapEventContextMenu(
+                  positionedEvent.event,
+                  positionedEvent.event.slotId ? (
+                    <EventItem
+                      event={positionedEvent.event}
+                      onClick={(e) => handleEventClick(positionedEvent.event, e)}
+                      showTime
+                      view="day"
+                    />
+                  ) : (
+                    <DraggableEvent
+                      event={positionedEvent.event}
+                      height={positionedEvent.height}
+                      onClick={(e) => handleEventClick(positionedEvent.event, e)}
+                      showTime
+                      view="day"
+                    />
+                  ),
+                )}
               </div>
             </div>
           ))}
@@ -310,6 +545,7 @@ export function DayView({
                       id={`day-cell-${currentDate.toISOString()}-${quarterHourTime}`}
                       key={`${hour.toString()}-${quarter}`}
                       onClick={() => {
+                        if (isBlockedDay || isDisabledDay) return;
                         const startTime = new Date(currentDate);
                         startTime.setHours(hourValue);
                         startTime.setMinutes(quarter * 15);
@@ -320,9 +556,10 @@ export function DayView({
                   );
                 })}
               </div>
-            );
-          })}
-        </div>
+              );
+            })}
+          </div>,
+        )}
       </div>
     </div>
   );

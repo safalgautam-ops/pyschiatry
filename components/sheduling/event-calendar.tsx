@@ -3,13 +3,11 @@
 import { RiCalendarCheckLine } from "@remixicon/react";
 import {
   addDays,
-  addMonths,
   addWeeks,
   endOfWeek,
   format,
-  isSameMonth,
+  startOfDay,
   startOfWeek,
-  subMonths,
   subWeeks,
 } from "date-fns";
 import {
@@ -29,6 +27,15 @@ import {
 } from "./constants";
 import { CalendarDndProvider } from "./calendar-dnd-context";
 import { AgendaView } from "./agenda-view";
+import {
+  formatCalendarDayTitle,
+  formatCalendarMonthYear,
+  formatCalendarShortMonthYear,
+  isCalendarMonthAfter,
+  isSameCalendarMonth,
+  shiftCalendarMonth,
+  type CalendarSystem,
+} from "./calendar-system";
 import { DayView } from "./day-view";
 import { EventDialog } from "./event-dialog";
 import { MonthView } from "./month-view";
@@ -44,9 +51,18 @@ import {
   DropdownMenuShortcut,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+
+type HolidayContextAction = "MARK_HOLIDAY" | "CLEAR_HOLIDAY";
 
 export interface EventCalendarProps {
   events?: CalendarEvent[];
+  blockedDates?: string[];
+  holidayDates?: string[];
+  disabledDates?: string[];
+  calendarSystem?: CalendarSystem;
+  onCalendarSystemChange?: (calendarSystem: CalendarSystem) => void;
+  showCalendarSystemToggle?: boolean;
   onEventAdd?: (event: CalendarEvent) => void;
   onEventUpdate?: (event: CalendarEvent) => void;
   onEventDelete?: (eventId: string) => void;
@@ -57,13 +73,32 @@ export interface EventCalendarProps {
   currentDate?: Date;
   onCurrentDateChange?: (date: Date) => void;
   allowCreate?: boolean;
+  onEventSelectReadOnly?: (event: CalendarEvent) => void;
+  onHolidayContextAction?: (payload: {
+    dateKey: string;
+    action: HolidayContextAction;
+  }) => void | Promise<void>;
+  onSlotContextAction?: (payload: {
+    event: CalendarEvent;
+    status: "OPEN" | "HELD" | "BLOCKED" | "REMOVE";
+  }) => void | Promise<void>;
+  onSlotBookAction?: (payload: {
+    event: CalendarEvent;
+  }) => void | Promise<void>;
   showToolbar?: boolean;
+  restrictPastNavigation?: boolean;
   externalCreateEventName?: string;
   externalCreateEventTarget?: string;
 }
 
 export function EventCalendar({
   events = [],
+  blockedDates = [],
+  holidayDates = [],
+  disabledDates = [],
+  calendarSystem,
+  onCalendarSystemChange,
+  showCalendarSystemToggle = false,
   onEventAdd,
   onEventUpdate,
   onEventDelete,
@@ -74,7 +109,12 @@ export function EventCalendar({
   currentDate: controlledCurrentDate,
   onCurrentDateChange,
   allowCreate = true,
+  onEventSelectReadOnly,
+  onHolidayContextAction,
+  onSlotContextAction,
+  onSlotBookAction,
   showToolbar = true,
+  restrictPastNavigation = false,
   externalCreateEventName,
   externalCreateEventTarget,
 }: EventCalendarProps) {
@@ -83,12 +123,33 @@ export function EventCalendar({
   );
   const [uncontrolledView, setUncontrolledView] =
     useState<CalendarView>(initialView);
+  const [uncontrolledCalendarSystem, setUncontrolledCalendarSystem] =
+    useState<CalendarSystem>(calendarSystem ?? "gregorian");
   const [isEventDialogOpen, setIsEventDialogOpen] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | null>(
     null,
   );
   const currentDate = controlledCurrentDate ?? uncontrolledCurrentDate;
   const view = controlledView ?? uncontrolledView;
+  const activeCalendarSystem = calendarSystem ?? uncontrolledCalendarSystem;
+  const canGoPrevious = useMemo(() => {
+    if (!restrictPastNavigation) return true;
+
+    const today = new Date();
+
+    if (view === "month") {
+      return isCalendarMonthAfter(currentDate, today, activeCalendarSystem);
+    }
+
+    if (view === "week") {
+      return (
+        startOfWeek(currentDate, { weekStartsOn: 0 }) >
+        startOfWeek(today, { weekStartsOn: 0 })
+      );
+    }
+
+    return startOfDay(currentDate) > startOfDay(today);
+  }, [activeCalendarSystem, currentDate, restrictPastNavigation, view]);
 
   const setCalendarDate = useCallback(
     (nextDate: Date) => {
@@ -111,6 +172,18 @@ export function EventCalendar({
       onViewChange?.(nextView);
     },
     [controlledView, onViewChange],
+  );
+
+  const setSystem = useCallback(
+    (nextSystem: CalendarSystem) => {
+      if (onCalendarSystemChange) {
+        onCalendarSystemChange(nextSystem);
+      }
+      if (calendarSystem === undefined) {
+        setUncontrolledCalendarSystem(nextSystem);
+      }
+    },
+    [calendarSystem, onCalendarSystemChange],
   );
 
   // Add keyboard shortcuts for view switching
@@ -171,8 +244,12 @@ export function EventCalendar({
   }, [allowCreate, externalCreateEventName, externalCreateEventTarget]);
 
   const handlePrevious = () => {
+    if (!canGoPrevious) return;
+
     if (view === "month") {
-      setCalendarDate(subMonths(currentDate, 1));
+      setCalendarDate(
+        shiftCalendarMonth(currentDate, -1, activeCalendarSystem),
+      );
     } else if (view === "week") {
       setCalendarDate(subWeeks(currentDate, 1));
     } else if (view === "day") {
@@ -185,7 +262,9 @@ export function EventCalendar({
 
   const handleNext = () => {
     if (view === "month") {
-      setCalendarDate(addMonths(currentDate, 1));
+      setCalendarDate(
+        shiftCalendarMonth(currentDate, 1, activeCalendarSystem),
+      );
     } else if (view === "week") {
       setCalendarDate(addWeeks(currentDate, 1));
     } else if (view === "day") {
@@ -201,7 +280,10 @@ export function EventCalendar({
   };
 
   const handleEventSelect = (event: CalendarEvent) => {
-    if (!allowCreate) return;
+    if (!allowCreate) {
+      onEventSelectReadOnly?.(event);
+      return;
+    }
     console.log("Event selected:", event); // Debug log
     setSelectedEvent(event);
     setIsEventDialogOpen(true);
@@ -290,17 +372,24 @@ export function EventCalendar({
 
   const viewTitle = useMemo(() => {
     if (view === "month") {
-      return format(currentDate, "MMMM yyyy");
+      return formatCalendarMonthYear(currentDate, activeCalendarSystem);
     }
     if (view === "week") {
       const start = startOfWeek(currentDate, { weekStartsOn: 0 });
       const end = endOfWeek(currentDate, { weekStartsOn: 0 });
-      if (isSameMonth(start, end)) {
-        return format(start, "MMMM yyyy");
+      if (isSameCalendarMonth(start, end, activeCalendarSystem)) {
+        return formatCalendarMonthYear(start, activeCalendarSystem);
       }
-      return `${format(start, "MMM")} - ${format(end, "MMM yyyy")}`;
+      return `${formatCalendarShortMonthYear(
+        start,
+        activeCalendarSystem,
+      )} - ${formatCalendarShortMonthYear(end, activeCalendarSystem)}`;
     }
     if (view === "day") {
+      if (activeCalendarSystem === "nepali") {
+        return formatCalendarDayTitle(currentDate, activeCalendarSystem);
+      }
+
       return (
         <>
           <span aria-hidden="true" className="min-[480px]:hidden">
@@ -320,13 +409,16 @@ export function EventCalendar({
       const start = currentDate;
       const end = addDays(currentDate, AgendaDaysToShow - 1);
 
-      if (isSameMonth(start, end)) {
-        return format(start, "MMMM yyyy");
+      if (isSameCalendarMonth(start, end, activeCalendarSystem)) {
+        return formatCalendarMonthYear(start, activeCalendarSystem);
       }
-      return `${format(start, "MMM")} - ${format(end, "MMM yyyy")}`;
+      return `${formatCalendarShortMonthYear(
+        start,
+        activeCalendarSystem,
+      )} - ${formatCalendarShortMonthYear(end, activeCalendarSystem)}`;
     }
-    return format(currentDate, "MMMM yyyy");
-  }, [currentDate, view]);
+    return formatCalendarMonthYear(currentDate, activeCalendarSystem);
+  }, [activeCalendarSystem, currentDate, view]);
 
   return (
     <div
@@ -346,26 +438,15 @@ export function EventCalendar({
         {showToolbar && (
           <div
             className={cn(
-              "flex items-center justify-between p-2 sm:p-4",
+              "flex flex-wrap items-center justify-between gap-3 p-2 sm:p-4",
               className,
             )}
           >
-            <div className="flex items-center gap-1 sm:gap-4">
-              <Button
-                className="max-[479px]:aspect-square max-[479px]:p-0!"
-                onClick={handleToday}
-                variant="outline"
-              >
-                <RiCalendarCheckLine
-                  aria-hidden="true"
-                  className="min-[480px]:hidden"
-                  size={16}
-                />
-                <span className="max-[479px]:sr-only">Today</span>
-              </Button>
+            <div className="flex items-center gap-1 sm:gap-2">
               <div className="flex items-center sm:gap-2">
                 <Button
                   aria-label="Previous"
+                  disabled={!canGoPrevious}
                   onClick={handlePrevious}
                   size="icon"
                   variant="ghost"
@@ -386,6 +467,39 @@ export function EventCalendar({
               </h2>
             </div>
             <div className="flex items-center gap-2">
+              <Button
+                className="max-[479px]:aspect-square max-[479px]:p-0!"
+                onClick={handleToday}
+                variant="outline"
+              >
+                <RiCalendarCheckLine
+                  aria-hidden="true"
+                  className="min-[480px]:hidden"
+                  size={16}
+                />
+                <span className="max-[479px]:sr-only">Today</span>
+              </Button>
+              {showCalendarSystemToggle && (
+                <ToggleGroup
+                  aria-label="Calendar system"
+                  onValueChange={(value) => {
+                    if (value === "gregorian" || value === "nepali") {
+                      setSystem(value);
+                    }
+                  }}
+                  size="sm"
+                  type="single"
+                  value={activeCalendarSystem}
+                  variant="outline"
+                >
+                  <ToggleGroupItem aria-label="Gregorian (AD)" value="gregorian">
+                    AD
+                  </ToggleGroupItem>
+                  <ToggleGroupItem aria-label="Nepali (BS)" value="nepali">
+                    BS
+                  </ToggleGroupItem>
+                </ToggleGroup>
+              )}
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button className="gap-1.5 max-[479px]:h-8" variant="outline">
@@ -444,26 +558,47 @@ export function EventCalendar({
         <div className="flex flex-1 flex-col">
           {view === "month" && (
             <MonthView
+              blockedDates={blockedDates}
+              calendarSystem={activeCalendarSystem}
               currentDate={currentDate}
+              disabledDates={disabledDates}
               events={events}
+              holidayDates={holidayDates}
               onEventCreate={handleEventCreate}
+              onHolidayContextAction={onHolidayContextAction}
               onEventSelect={handleEventSelect}
+              onSlotBookAction={onSlotBookAction}
+              onSlotContextAction={onSlotContextAction}
             />
           )}
           {view === "week" && (
             <WeekView
+              blockedDates={blockedDates}
+              calendarSystem={activeCalendarSystem}
               currentDate={currentDate}
+              disabledDates={disabledDates}
               events={events}
+              holidayDates={holidayDates}
               onEventCreate={handleEventCreate}
+              onHolidayContextAction={onHolidayContextAction}
               onEventSelect={handleEventSelect}
+              onSlotBookAction={onSlotBookAction}
+              onSlotContextAction={onSlotContextAction}
             />
           )}
           {view === "day" && (
             <DayView
+              blockedDates={blockedDates}
+              calendarSystem={activeCalendarSystem}
               currentDate={currentDate}
+              disabledDates={disabledDates}
               events={events}
+              holidayDates={holidayDates}
               onEventCreate={handleEventCreate}
+              onHolidayContextAction={onHolidayContextAction}
               onEventSelect={handleEventSelect}
+              onSlotBookAction={onSlotBookAction}
+              onSlotContextAction={onSlotContextAction}
             />
           )}
           {view === "agenda" && (

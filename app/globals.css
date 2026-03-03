@@ -179,4 +179,22 @@
       transparent 6px 14px
     );
   }
+
+  .calendar-holiday-pattern {
+    background-color: color-mix(in oklab, var(--color-red-100) 54%, var(--color-background));
+    background-image: repeating-linear-gradient(
+      -45deg,
+      hsl(0 75% 55% / 0.16) 0 6px,
+      transparent 6px 14px
+    );
+  }
+
+  .dark .calendar-holiday-pattern {
+    background-color: color-mix(in oklab, var(--color-red-900) 30%, var(--color-background));
+    background-image: repeating-linear-gradient(
+      -45deg,
+      hsl(0 85% 70% / 0.16) 0 6px,
+      transparent 6px 14px
+    );
+  }
 }

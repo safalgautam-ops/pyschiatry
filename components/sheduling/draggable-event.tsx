@@ -64,6 +64,7 @@ export function DraggableEvent({
 
   // Handle mouse down to track where on the event the user clicked
   const handleMouseDown = (e: React.MouseEvent) => {
+    if (e.button !== 0) return;
     if (elementRef.current) {
       const rect = elementRef.current.getBoundingClientRect();
       setDragHandlePosition({

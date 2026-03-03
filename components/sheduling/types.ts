@@ -9,6 +9,8 @@ export interface CalendarEvent {
   allDay?: boolean;
   color?: EventColor;
   location?: string;
+  slotId?: string;
+  slotStatus?: "OPEN" | "HELD" | "BOOKED" | "BLOCKED";
 }
 
 export type EventColor =

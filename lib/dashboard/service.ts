@@ -6,16 +6,20 @@ import {
   doctorStaff,
   documents,
   reportAccessRequests,
+  scheduleExceptions,
   staffProfile,
   user,
 } from "@/drizzle";
 import type { AppRole, AuthenticatedUser } from "@/lib/auth/session";
 import {
   and,
+  asc,
   desc,
   eq,
+  gte,
   inArray,
   like,
+  lte,
   ne,
   or,
   sql,
@@ -68,10 +72,29 @@ export type PatientAppointmentRow = {
   endsAt: Date;
 };
 
+export type TenantOpenSlotRow = {
+  id: string;
+  doctorUserId: string;
+  doctorName: string;
+  status: string;
+  startsAt: Date;
+  endsAt: Date;
+};
+
+export type PatientAvailableSlotRow = {
+  id: string;
+  doctorUserId: string;
+  doctorName: string;
+  status: string;
+  startsAt: Date;
+  endsAt: Date;
+};
+
 export type DashboardSummary = {
   role: AppRole;
   doctorScope: string[];
   isStaffAdmin: boolean;
+  holidayDates: string[];
   counts: {
     patients: number;
     staff: number;
@@ -83,7 +106,9 @@ export type DashboardSummary = {
   tenantPatients: TenantPatientRow[];
   tenantStaff: TenantStaffRow[];
   tenantAppointments: TenantAppointmentRow[];
+  tenantOpenSlots: TenantOpenSlotRow[];
   patientAppointments: PatientAppointmentRow[];
+  patientAvailableSlots: PatientAvailableSlotRow[];
 };
 
 type ScopeDetails = {
@@ -94,6 +119,14 @@ type ScopeDetails = {
 
 function unique(values: string[]) {
   return [...new Set(values)];
+}
+
+function toDateKey(value: Date | string) {
+  const date = new Date(value);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function isDoctorInScope(scope: string[], doctorUserId: string) {
@@ -219,6 +252,12 @@ export async function getDashboardSummary(
   currentUser: AuthenticatedUser,
 ): Promise<DashboardSummary> {
   const scope = await resolveScope(currentUser);
+  const now = new Date();
+  const horizon = new Date(now.getTime() + 1000 * 60 * 60 * 24 * 90);
+  const holidayWindowStart = new Date(now);
+  holidayWindowStart.setDate(holidayWindowStart.getDate() - 45);
+  const holidayWindowEnd = new Date(now);
+  holidayWindowEnd.setDate(holidayWindowEnd.getDate() + 420);
 
   const patientAppointments =
     currentUser.role === "PATIENT"
@@ -241,14 +280,74 @@ export async function getDashboardSummary(
             ),
           )
           .orderBy(desc(appointmentSlots.startsAt))
-          .limit(10)
+          .limit(120)
       : [];
+
+  const patientAvailableSlots =
+    currentUser.role === "PATIENT"
+      ? await db
+          .select({
+            id: appointmentSlots.id,
+            doctorUserId: appointmentSlots.doctorUserId,
+            doctorName: user.name,
+            status: appointmentSlots.status,
+            startsAt: appointmentSlots.startsAt,
+            endsAt: appointmentSlots.endsAt,
+          })
+          .from(appointmentSlots)
+          .innerJoin(user, eq(appointmentSlots.doctorUserId, user.id))
+          .where(
+            and(
+              eq(appointmentSlots.status, "OPEN"),
+              gte(appointmentSlots.startsAt, now),
+              lte(appointmentSlots.startsAt, horizon),
+            ),
+          )
+          .orderBy(asc(appointmentSlots.startsAt))
+          .limit(200)
+      : [];
+
+  const patientVisibleDoctorIds =
+    currentUser.role === "PATIENT"
+      ? unique([
+          ...scope.doctorScope,
+          ...patientAppointments.map((row) => row.doctorUserId),
+          ...patientAvailableSlots.map((row) => row.doctorUserId),
+        ])
+      : [];
+
+  const holidayDoctorScope =
+    currentUser.role === "PATIENT" && patientVisibleDoctorIds.length > 0
+      ? patientVisibleDoctorIds
+      : scope.doctorScope;
+
+  const holidayDatesRows =
+    holidayDoctorScope.length > 0
+      ? await db
+          .select({
+            date: scheduleExceptions.date,
+          })
+          .from(scheduleExceptions)
+          .where(
+            and(
+              inArray(scheduleExceptions.doctorUserId, holidayDoctorScope),
+              eq(scheduleExceptions.type, "OFF"),
+              gte(scheduleExceptions.date, holidayWindowStart),
+              lte(scheduleExceptions.date, holidayWindowEnd),
+            ),
+          )
+          .orderBy(asc(scheduleExceptions.date))
+          .limit(600)
+      : [];
+
+  const holidayDates = unique(holidayDatesRows.map((row) => toDateKey(row.date))).sort();
 
   if (scope.doctorScope.length === 0 && currentUser.role !== "PATIENT") {
     return {
       role: currentUser.role,
       doctorScope: [],
       isStaffAdmin: scope.isStaffAdmin,
+      holidayDates,
       counts: {
         patients: 0,
         staff: 0,
@@ -260,7 +359,9 @@ export async function getDashboardSummary(
       tenantPatients: [],
       tenantStaff: [],
       tenantAppointments: [],
+      tenantOpenSlots: [],
       patientAppointments,
+      patientAvailableSlots,
     };
   }
 
@@ -348,7 +449,7 @@ export async function getDashboardSummary(
             ),
           )
           .orderBy(desc(appointmentSlots.startsAt))
-          .limit(20)
+          .limit(200)
       : [];
 
   const apptDoctorNameById = await getUserNames(
@@ -361,6 +462,31 @@ export async function getDashboardSummary(
       doctorName: apptDoctorNameById.get(item.doctorUserId) ?? "Unknown doctor",
     }),
   );
+
+  const tenantOpenSlots =
+    scope.doctorScope.length > 0
+      ? await db
+          .select({
+            id: appointmentSlots.id,
+            doctorUserId: appointmentSlots.doctorUserId,
+            doctorName: user.name,
+            status: appointmentSlots.status,
+            startsAt: appointmentSlots.startsAt,
+            endsAt: appointmentSlots.endsAt,
+          })
+          .from(appointmentSlots)
+          .innerJoin(user, eq(appointmentSlots.doctorUserId, user.id))
+          .where(
+            and(
+              inArray(appointmentSlots.doctorUserId, scope.doctorScope),
+              eq(appointmentSlots.status, "OPEN"),
+              gte(appointmentSlots.startsAt, now),
+              lte(appointmentSlots.startsAt, horizon),
+            ),
+          )
+          .orderBy(asc(appointmentSlots.startsAt))
+          .limit(250)
+      : [];
 
   const patientsCount =
     scope.doctorScope.length > 0
@@ -480,10 +606,11 @@ export async function getDashboardSummary(
       : 0;
 
   return {
-    role: currentUser.role,
-    doctorScope: scope.doctorScope,
-    isStaffAdmin: scope.isStaffAdmin,
-    counts: {
+      role: currentUser.role,
+      doctorScope: scope.doctorScope,
+      isStaffAdmin: scope.isStaffAdmin,
+      holidayDates,
+      counts: {
       patients: patientsCount,
       staff: staffCount,
       appointments: appointmentsCount,
@@ -494,7 +621,9 @@ export async function getDashboardSummary(
     tenantPatients: tenantPatientsWithDoctorName,
     tenantStaff: tenantStaffWithDoctorName,
     tenantAppointments,
+    tenantOpenSlots,
     patientAppointments,
+    patientAvailableSlots,
   };
 }
 

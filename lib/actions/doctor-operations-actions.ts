@@ -2,16 +2,22 @@
 
 import { requireAuthenticatedUser } from "@/lib/auth/session";
 import {
+  applyNepalDefaultWeeklySchedule,
   bookPatientAppointmentSlot,
+  clearDoctorHolidayByDate,
   createManualSlot,
+  deleteScheduleException,
+  deleteDoctorSlot,
   createScheduleException,
   createScheduleRule,
   deleteScheduleRule,
   generateSlotsFromRules,
+  markDoctorHolidayByDate,
   requestDocumentShare,
   respondToIncomingShare,
   sendDoctorChatMessage,
   sendPatientChatMessage,
+  setDoctorSlotStatus,
   updateAppointmentStatus,
   uploadEncryptedReport,
 } from "@/lib/dashboard/doctor-operations-service";
@@ -38,10 +44,25 @@ function revalidateDoctorPaths() {
   revalidatePath("/dashboard/doctor/reports");
 }
 
+function revalidateSchedulePaths() {
+  revalidateDoctorPaths();
+  revalidatePath("/dashboard/patient");
+  revalidatePath("/dashboard/patient/schedule");
+}
+
 export async function createScheduleRuleAction(formData: FormData) {
   const user = await requireAuthenticatedUser();
   await createScheduleRule(user, {
     dayOfWeek: Number(asString(formData.get("dayOfWeek"))),
+    startTime: asString(formData.get("startTime")),
+    endTime: asString(formData.get("endTime")),
+  });
+  revalidateDoctorPaths();
+}
+
+export async function applyNepalWeeklyScheduleAction(formData: FormData) {
+  const user = await requireAuthenticatedUser();
+  await applyNepalDefaultWeeklySchedule(user, {
     startTime: asString(formData.get("startTime")),
     endTime: asString(formData.get("endTime")),
   });
@@ -64,6 +85,42 @@ export async function createScheduleExceptionAction(formData: FormData) {
     endTime: asString(formData.get("endTime")) || undefined,
     reason: asString(formData.get("reason")) || undefined,
   });
+  revalidateDoctorPaths();
+}
+
+export async function markDoctorHolidayAction(input: {
+  date: string;
+  reason?: string;
+}) {
+  const user = await requireAuthenticatedUser();
+  await markDoctorHolidayByDate(user, input);
+  revalidateSchedulePaths();
+}
+
+export async function clearDoctorHolidayAction(input: { date: string }) {
+  const user = await requireAuthenticatedUser();
+  await clearDoctorHolidayByDate(user, input);
+  revalidateSchedulePaths();
+}
+
+export async function setDoctorSlotStatusAction(input: {
+  slotId: string;
+  status: "OPEN" | "HELD" | "BLOCKED";
+}) {
+  const user = await requireAuthenticatedUser();
+  await setDoctorSlotStatus(user, input);
+  revalidateSchedulePaths();
+}
+
+export async function deleteDoctorSlotAction(input: { slotId: string }) {
+  const user = await requireAuthenticatedUser();
+  await deleteDoctorSlot(user, input);
+  revalidateSchedulePaths();
+}
+
+export async function deleteScheduleExceptionAction(formData: FormData) {
+  const user = await requireAuthenticatedUser();
+  await deleteScheduleException(user, asString(formData.get("scheduleExceptionId")));
   revalidateDoctorPaths();
 }
 
