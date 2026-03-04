@@ -29,9 +29,9 @@ import { CalendarDndProvider } from "./calendar-dnd-context";
 import { AgendaView } from "./agenda-view";
 import {
   formatCalendarDayTitle,
+  isCalendarMonthAfter,
   formatCalendarMonthYear,
   formatCalendarShortMonthYear,
-  isCalendarMonthAfter,
   isSameCalendarMonth,
   shiftCalendarMonth,
   type CalendarSystem,
@@ -54,6 +54,16 @@ import {
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 
 type HolidayContextAction = "MARK_HOLIDAY" | "CLEAR_HOLIDAY";
+type SlotContextStatus = "OPEN" | "HELD" | "BLOCKED" | "REMOVE";
+type MonthDayStatus =
+  | "BOOKED"
+  | "AVAILABLE"
+  | "FULL"
+  | "BLOCKED"
+  | "HOLIDAY"
+  | "DISABLED"
+  | "OUTSIDE"
+  | "DEFAULT";
 
 export interface EventCalendarProps {
   events?: CalendarEvent[];
@@ -66,13 +76,6 @@ export interface EventCalendarProps {
   onEventAdd?: (event: CalendarEvent) => void;
   onEventUpdate?: (event: CalendarEvent) => void;
   onEventDelete?: (eventId: string) => void;
-  className?: string;
-  initialView?: CalendarView;
-  view?: CalendarView;
-  onViewChange?: (view: CalendarView) => void;
-  currentDate?: Date;
-  onCurrentDateChange?: (date: Date) => void;
-  allowCreate?: boolean;
   onEventSelectReadOnly?: (event: CalendarEvent) => void;
   onHolidayContextAction?: (payload: {
     dateKey: string;
@@ -80,13 +83,30 @@ export interface EventCalendarProps {
   }) => void | Promise<void>;
   onSlotContextAction?: (payload: {
     event: CalendarEvent;
-    status: "OPEN" | "HELD" | "BLOCKED" | "REMOVE";
+    status: SlotContextStatus;
   }) => void | Promise<void>;
-  onSlotBookAction?: (payload: {
-    event: CalendarEvent;
-  }) => void | Promise<void>;
-  showToolbar?: boolean;
+  onSlotBookAction?: (payload: { event: CalendarEvent }) => void | Promise<void>;
+  monthHideEvents?: boolean;
+  monthAvailableDates?: string[];
+  monthFullDates?: string[];
+  monthBookedDates?: string[];
+  monthBookedDayVariant?: "striped" | "solid";
+  monthBookedDayLabel?: string;
+  monthFullDayTooltip?: string;
+  onMonthDaySelect?: (payload: {
+    date: Date;
+    dateKey: string;
+    status: MonthDayStatus;
+  }) => void;
+  className?: string;
+  initialView?: CalendarView;
+  view?: CalendarView;
+  onViewChange?: (view: CalendarView) => void;
+  currentDate?: Date;
+  onCurrentDateChange?: (date: Date) => void;
   restrictPastNavigation?: boolean;
+  allowCreate?: boolean;
+  showToolbar?: boolean;
   externalCreateEventName?: string;
   externalCreateEventTarget?: string;
 }
@@ -96,25 +116,33 @@ export function EventCalendar({
   blockedDates = [],
   holidayDates = [],
   disabledDates = [],
-  calendarSystem,
+  calendarSystem = "gregorian",
   onCalendarSystemChange,
   showCalendarSystemToggle = false,
   onEventAdd,
   onEventUpdate,
   onEventDelete,
+  onEventSelectReadOnly,
+  onHolidayContextAction,
+  onSlotContextAction,
+  onSlotBookAction,
+  monthHideEvents = false,
+  monthAvailableDates = [],
+  monthFullDates = [],
+  monthBookedDates = [],
+  monthBookedDayVariant = "striped",
+  monthBookedDayLabel = "Booked session",
+  monthFullDayTooltip,
+  onMonthDaySelect,
   className,
   initialView = "month",
   view: controlledView,
   onViewChange,
   currentDate: controlledCurrentDate,
   onCurrentDateChange,
-  allowCreate = true,
-  onEventSelectReadOnly,
-  onHolidayContextAction,
-  onSlotContextAction,
-  onSlotBookAction,
-  showToolbar = true,
   restrictPastNavigation = false,
+  allowCreate = true,
+  showToolbar = true,
   externalCreateEventName,
   externalCreateEventTarget,
 }: EventCalendarProps) {
@@ -124,32 +152,16 @@ export function EventCalendar({
   const [uncontrolledView, setUncontrolledView] =
     useState<CalendarView>(initialView);
   const [uncontrolledCalendarSystem, setUncontrolledCalendarSystem] =
-    useState<CalendarSystem>(calendarSystem ?? "gregorian");
+    useState<CalendarSystem>(calendarSystem);
   const [isEventDialogOpen, setIsEventDialogOpen] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | null>(
     null,
   );
   const currentDate = controlledCurrentDate ?? uncontrolledCurrentDate;
   const view = controlledView ?? uncontrolledView;
-  const activeCalendarSystem = calendarSystem ?? uncontrolledCalendarSystem;
-  const canGoPrevious = useMemo(() => {
-    if (!restrictPastNavigation) return true;
-
-    const today = new Date();
-
-    if (view === "month") {
-      return isCalendarMonthAfter(currentDate, today, activeCalendarSystem);
-    }
-
-    if (view === "week") {
-      return (
-        startOfWeek(currentDate, { weekStartsOn: 0 }) >
-        startOfWeek(today, { weekStartsOn: 0 })
-      );
-    }
-
-    return startOfDay(currentDate) > startOfDay(today);
-  }, [activeCalendarSystem, currentDate, restrictPastNavigation, view]);
+  const activeCalendarSystem = onCalendarSystemChange
+    ? calendarSystem
+    : uncontrolledCalendarSystem;
 
   const setCalendarDate = useCallback(
     (nextDate: Date) => {
@@ -178,12 +190,12 @@ export function EventCalendar({
     (nextSystem: CalendarSystem) => {
       if (onCalendarSystemChange) {
         onCalendarSystemChange(nextSystem);
+        return;
       }
-      if (calendarSystem === undefined) {
-        setUncontrolledCalendarSystem(nextSystem);
-      }
+
+      setUncontrolledCalendarSystem(nextSystem);
     },
-    [calendarSystem, onCalendarSystemChange],
+    [onCalendarSystemChange],
   );
 
   // Add keyboard shortcuts for view switching
@@ -243,8 +255,27 @@ export function EventCalendar({
       window.removeEventListener(externalCreateEventName, handleExternalCreate);
   }, [allowCreate, externalCreateEventName, externalCreateEventTarget]);
 
+  const canNavigatePrevious = useMemo(() => {
+    if (!restrictPastNavigation) return true;
+
+    const today = new Date();
+    if (view === "month") {
+      return isCalendarMonthAfter(currentDate, today, activeCalendarSystem);
+    }
+    if (view === "week") {
+      return (
+        startOfWeek(currentDate, { weekStartsOn: 0 }) >
+        startOfWeek(today, { weekStartsOn: 0 })
+      );
+    }
+    if (view === "day") {
+      return startOfDay(currentDate) > startOfDay(today);
+    }
+    return startOfDay(currentDate) > startOfDay(today);
+  }, [activeCalendarSystem, currentDate, restrictPastNavigation, view]);
+
   const handlePrevious = () => {
-    if (!canGoPrevious) return;
+    if (!canNavigatePrevious) return;
 
     if (view === "month") {
       setCalendarDate(
@@ -284,14 +315,12 @@ export function EventCalendar({
       onEventSelectReadOnly?.(event);
       return;
     }
-    console.log("Event selected:", event); // Debug log
     setSelectedEvent(event);
     setIsEventDialogOpen(true);
   };
 
   const handleEventCreate = (startTime: Date) => {
     if (!allowCreate) return;
-    console.log("Creating new event at:", startTime); // Debug log
 
     // Snap to 15-minute intervals
     const minutes = startTime.getMinutes();
@@ -446,7 +475,7 @@ export function EventCalendar({
               <div className="flex items-center sm:gap-2">
                 <Button
                   aria-label="Previous"
-                  disabled={!canGoPrevious}
+                  disabled={!canNavigatePrevious}
                   onClick={handlePrevious}
                   size="icon"
                   variant="ghost"
@@ -562,13 +591,21 @@ export function EventCalendar({
               calendarSystem={activeCalendarSystem}
               currentDate={currentDate}
               disabledDates={disabledDates}
+              availableDates={monthAvailableDates}
               events={events}
+              fullDates={monthFullDates}
+              bookedDates={monthBookedDates}
+              bookedDayVariant={monthBookedDayVariant}
+              bookedDayLabel={monthBookedDayLabel}
+              fullDayTooltip={monthFullDayTooltip}
+              hideEvents={monthHideEvents}
               holidayDates={holidayDates}
               onEventCreate={handleEventCreate}
-              onHolidayContextAction={onHolidayContextAction}
               onEventSelect={handleEventSelect}
+              onHolidayContextAction={onHolidayContextAction}
               onSlotBookAction={onSlotBookAction}
               onSlotContextAction={onSlotContextAction}
+              onDaySelect={onMonthDaySelect}
             />
           )}
           {view === "week" && (
@@ -580,8 +617,8 @@ export function EventCalendar({
               events={events}
               holidayDates={holidayDates}
               onEventCreate={handleEventCreate}
-              onHolidayContextAction={onHolidayContextAction}
               onEventSelect={handleEventSelect}
+              onHolidayContextAction={onHolidayContextAction}
               onSlotBookAction={onSlotBookAction}
               onSlotContextAction={onSlotContextAction}
             />
@@ -595,8 +632,8 @@ export function EventCalendar({
               events={events}
               holidayDates={holidayDates}
               onEventCreate={handleEventCreate}
-              onHolidayContextAction={onHolidayContextAction}
               onEventSelect={handleEventSelect}
+              onHolidayContextAction={onHolidayContextAction}
               onSlotBookAction={onSlotBookAction}
               onSlotContextAction={onSlotContextAction}
             />

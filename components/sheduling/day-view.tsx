@@ -3,11 +3,11 @@
 import {
   addHours,
   areIntervalsOverlapping,
+  differenceInMilliseconds,
   differenceInMinutes,
   eachHourOfInterval,
   format,
   getHours,
-  getMinutes,
   isSameDay,
   startOfDay,
 } from "date-fns";
@@ -169,13 +169,24 @@ export function DayView({
         ? eventEnd
         : addHours(dayStart, 24);
 
-      // Calculate top position and height
-      const startHour =
-        getHours(adjustedStart) + getMinutes(adjustedStart) / 60;
-      const endHour = getHours(adjustedEnd) + getMinutes(adjustedEnd) / 60;
+      // Clip to the visible timeline window (StartHour..EndHour) and use
+      // minute-precise math so slot height aligns exactly with hour lines.
+      const visibleStart = addHours(dayStart, StartHour);
+      const visibleEnd = addHours(dayStart, EndHour);
+      const clippedStart =
+        adjustedStart < visibleStart ? visibleStart : adjustedStart;
+      const clippedEnd = adjustedEnd > visibleEnd ? visibleEnd : adjustedEnd;
+      const durationMinutes =
+        differenceInMilliseconds(clippedEnd, clippedStart) / 60000;
 
-      const top = (startHour - StartHour) * WeekCellsHeight;
-      const height = (endHour - startHour) * WeekCellsHeight;
+      if (durationMinutes <= 0) {
+        continue;
+      }
+
+      const minutesFromVisibleStart =
+        differenceInMilliseconds(clippedStart, visibleStart) / 60000;
+      const top = (minutesFromVisibleStart / 60) * WeekCellsHeight;
+      const height = Math.max((durationMinutes / 60) * WeekCellsHeight, 2);
 
       // Find a column for this event
       let columnIndex = 0;
@@ -236,12 +247,13 @@ export function DayView({
     const isSlotActionBlocked = isBlockedDay || isManagedHoliday || isDisabledDay;
     const slotStatus = event.slotStatus;
     const slotId = event.slotId;
+    const hasSlotOptions = Boolean(event.slotOptions && event.slotOptions.length > 0);
     const effectiveSlotStatus =
-      slotId && slotStatus ? slotStatus : slotId ? ("OPEN" as const) : undefined;
+      slotStatus ?? (slotId || hasSlotOptions ? ("OPEN" as const) : undefined);
     const bookableContextEnabled =
       !isSlotActionBlocked &&
       Boolean(onSlotBookAction) &&
-      Boolean(slotId) &&
+      (Boolean(slotId) || hasSlotOptions) &&
       effectiveSlotStatus === "OPEN";
     const slotContextMenuEnabled =
       !isSlotActionBlocked &&
@@ -253,7 +265,7 @@ export function DayView({
       return (
         <ContextMenu>
           <ContextMenuTrigger asChild>
-            <div>
+            <div className="size-full">
               {eventNode}
             </div>
           </ContextMenuTrigger>
@@ -263,7 +275,7 @@ export function DayView({
             <ContextMenuItem
               onSelect={() =>
                 void onSlotBookAction?.({
-                  event: { ...event, slotId },
+                  event,
                 })
               }
             >
@@ -281,7 +293,7 @@ export function DayView({
     return (
       <ContextMenu>
         <ContextMenuTrigger asChild>
-          <div>
+          <div className="size-full">
             {eventNode}
           </div>
         </ContextMenuTrigger>
@@ -339,7 +351,7 @@ export function DayView({
   };
 
   const wrapDayContextMenu = (node: React.ReactNode) => {
-    if (!onHolidayContextAction && !onSlotBookAction && !onSlotContextAction) {
+    if (!onHolidayContextAction) {
       return node;
     }
     return (
@@ -357,34 +369,30 @@ export function DayView({
               : format(currentDate, "EEE, MMM d, yyyy")}
           </ContextMenuLabel>
           <ContextMenuSeparator />
-          {onHolidayContextAction ? (
-            isManagedHoliday ? (
-              <ContextMenuItem
-                disabled={isDisabledDay}
-                onSelect={() =>
-                  void onHolidayContextAction({
-                    dateKey,
-                    action: "CLEAR_HOLIDAY",
-                  })
-                }
-              >
-                Remove Holiday
-              </ContextMenuItem>
-            ) : (
-              <ContextMenuItem
-                disabled={isDisabledDay}
-                onSelect={() =>
-                  void onHolidayContextAction({
-                    dateKey,
-                    action: "MARK_HOLIDAY",
-                  })
-                }
-              >
-                Mark as Holiday
-              </ContextMenuItem>
-            )
+          {isManagedHoliday ? (
+            <ContextMenuItem
+              disabled={isDisabledDay}
+              onSelect={() =>
+                void onHolidayContextAction({
+                  dateKey,
+                  action: "CLEAR_HOLIDAY",
+                })
+              }
+            >
+              Remove Holiday
+            </ContextMenuItem>
           ) : (
-            <ContextMenuItem disabled>No day actions</ContextMenuItem>
+            <ContextMenuItem
+              disabled={isDisabledDay}
+              onSelect={() =>
+                void onHolidayContextAction({
+                  dateKey,
+                  action: "MARK_HOLIDAY",
+                })
+              }
+            >
+              Mark as Holiday
+            </ContextMenuItem>
           )}
         </ContextMenuContent>
       </ContextMenu>
@@ -484,7 +492,9 @@ export function DayView({
               <div className="size-full">
                 {wrapEventContextMenu(
                   positionedEvent.event,
-                  positionedEvent.event.slotId ? (
+                  positionedEvent.event.slotId ||
+                    positionedEvent.event.slotStatus ||
+                    (positionedEvent.event.slotOptions?.length ?? 0) > 0 ? (
                     <EventItem
                       event={positionedEvent.event}
                       onClick={(e) => handleEventClick(positionedEvent.event, e)}

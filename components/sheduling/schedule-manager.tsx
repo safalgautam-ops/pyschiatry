@@ -1,6 +1,5 @@
 import {
   applyNepalWeeklyScheduleAction,
-  bookPatientSlotAction,
   createScheduleExceptionAction,
   deleteScheduleExceptionAction,
   generateSlotsAction,
@@ -111,7 +110,7 @@ export function DoctorScheduleManager({
     end: new Date(slot.endsAt),
     color:
       slot.status === "BOOKED"
-        ? "rose"
+        ? "emeraldStriped"
         : slot.status === "HELD"
           ? "amber"
           : slot.status === "BLOCKED"
@@ -122,6 +121,24 @@ export function DoctorScheduleManager({
   const holidayExceptionDates = data.scheduleExceptions
     .filter((item) => item.type === "OFF")
     .map((item) => item.date);
+
+  const fullyBookedDateKeys = Array.from(
+    data.upcomingSlots.reduce(
+      (acc, slot) => {
+        const key = toDateKey(slot.startsAt);
+        const current = acc.get(key) ?? { booked: 0, total: 0 };
+        current.total += 1;
+        if (slot.status === "BOOKED") {
+          current.booked += 1;
+        }
+        acc.set(key, current);
+        return acc;
+      },
+      new Map<string, { booked: number; total: number }>(),
+    ),
+  )
+    .filter(([, stats]) => stats.total > 0 && stats.booked === stats.total)
+    .map(([key]) => key);
 
   const blockedDates = Array.from(
     new Set([
@@ -204,6 +221,7 @@ export function DoctorScheduleManager({
           </div>
           <DoctorScheduleCalendar
             blockedDates={blockedDates}
+            bookedDates={fullyBookedDateKeys}
             className="px-4 pb-4 pt-0"
             events={slotEvents}
             holidayDates={holidayExceptionDates}
@@ -211,57 +229,53 @@ export function DoctorScheduleManager({
         </FramePanel>
       </Frame>
 
-      <Frame>
-        <FramePanel className="p-0">
-          <div className="border-b px-5 py-4">
-            <FrameTitle>Holiday Exceptions</FrameTitle>
-            <FrameDescription>
-              Includes national or sudden closures added by the doctor team.
-            </FrameDescription>
-          </div>
-          <div className="p-5">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Date</TableHead>
-                  <TableHead>Reason</TableHead>
-                  <TableHead className="text-right">Action</TableHead>
+      <section className="space-y-2">
+        <h2 className="font-cormorant text-2xl leading-none">Holiday Exceptions</h2>
+        <p className="font-at-aero-regular text-muted-foreground text-sm">
+          Includes national or sudden closures added by the doctor team.
+        </p>
+        <Frame className="w-full">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Date</TableHead>
+                <TableHead>Reason</TableHead>
+                <TableHead className="text-right">Action</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {holidayExceptions.map((item) => (
+                <TableRow key={item.id}>
+                  <TableCell>{formatDateTime(item.date)}</TableCell>
+                  <TableCell>{item.reason || "Holiday / OFF"}</TableCell>
+                  <TableCell className="text-right">
+                    <form action={deleteScheduleExceptionAction}>
+                      <input
+                        type="hidden"
+                        name="scheduleExceptionId"
+                        value={item.id}
+                      />
+                      <Button size="sm" type="submit" variant="outline">
+                        Remove
+                      </Button>
+                    </form>
+                  </TableCell>
                 </TableRow>
-              </TableHeader>
-              <TableBody>
-                {holidayExceptions.map((item) => (
-                  <TableRow key={item.id}>
-                    <TableCell>{formatDateTime(item.date)}</TableCell>
-                    <TableCell>{item.reason || "Holiday / OFF"}</TableCell>
-                    <TableCell className="text-right">
-                      <form action={deleteScheduleExceptionAction}>
-                        <input
-                          type="hidden"
-                          name="scheduleExceptionId"
-                          value={item.id}
-                        />
-                        <Button size="sm" type="submit" variant="outline">
-                          Remove
-                        </Button>
-                      </form>
-                    </TableCell>
-                  </TableRow>
-                ))}
-                {holidayExceptions.length === 0 && (
-                  <TableRow>
-                    <TableCell
-                      className="text-center text-muted-foreground"
-                      colSpan={3}
-                    >
-                      No holiday exceptions yet.
-                    </TableCell>
-                  </TableRow>
-                )}
-              </TableBody>
-            </Table>
-          </div>
-        </FramePanel>
-      </Frame>
+              ))}
+              {holidayExceptions.length === 0 && (
+                <TableRow>
+                  <TableCell
+                    className="text-center text-muted-foreground"
+                    colSpan={3}
+                  >
+                    No holiday exceptions yet.
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </Frame>
+      </section>
     </div>
   );
 }
@@ -272,87 +286,40 @@ export function PatientScheduleManager({
   data: PatientScheduleData;
 }) {
   return (
-    <Frame className="grid gap-1 lg:grid-cols-2">
-      <FramePanel className="p-0">
-        <div className="border-b px-5 py-4">
-          <FrameTitle>Available Slots</FrameTitle>
-          <FrameDescription>
-            Book slots from available doctors.
-          </FrameDescription>
-        </div>
-        <div className="p-5">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Doctor</TableHead>
-                <TableHead>Start</TableHead>
-                <TableHead>End</TableHead>
-                <TableHead className="text-right">Book</TableHead>
+    <section className="space-y-2">
+      <h2 className="font-cormorant text-2xl leading-none">My Bookings</h2>
+      <p className="font-at-aero-regular text-muted-foreground text-sm">
+        Recent appointments and their status.
+      </p>
+      <Frame className="w-full">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Doctor</TableHead>
+              <TableHead>Start</TableHead>
+              <TableHead>Status</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {data.bookedAppointments.map((booking) => (
+              <TableRow key={booking.appointmentId}>
+                <TableCell>{booking.doctorName}</TableCell>
+                <TableCell>{formatDateTime(booking.startsAt)}</TableCell>
+                <TableCell>
+                  <Badge variant="outline">{booking.status}</Badge>
+                </TableCell>
               </TableRow>
-            </TableHeader>
-            <TableBody>
-              {data.availableSlots.map((slot) => (
-                <TableRow key={slot.slotId}>
-                  <TableCell>{slot.doctorName}</TableCell>
-                  <TableCell>{formatDateTime(slot.startsAt)}</TableCell>
-                  <TableCell>{formatDateTime(slot.endsAt)}</TableCell>
-                  <TableCell className="text-right">
-                    <form action={bookPatientSlotAction}>
-                      <input type="hidden" name="slotId" value={slot.slotId} />
-                      <Button size="sm" type="submit">
-                        Book
-                      </Button>
-                    </form>
-                  </TableCell>
-                </TableRow>
-              ))}
-              {data.availableSlots.length === 0 && (
-                <TableRow>
-                  <TableCell className="text-center text-muted-foreground" colSpan={4}>
-                    No open slots available right now.
-                  </TableCell>
-                </TableRow>
-              )}
-            </TableBody>
-          </Table>
-        </div>
-      </FramePanel>
-
-      <FramePanel className="p-0">
-        <div className="border-b px-5 py-4">
-          <FrameTitle>My Bookings</FrameTitle>
-          <FrameDescription>Recent appointments and their status.</FrameDescription>
-        </div>
-        <div className="p-5">
-          <Table>
-            <TableHeader>
+            ))}
+            {data.bookedAppointments.length === 0 && (
               <TableRow>
-                <TableHead>Doctor</TableHead>
-                <TableHead>Start</TableHead>
-                <TableHead>Status</TableHead>
+                <TableCell className="text-center text-muted-foreground" colSpan={3}>
+                  No bookings yet.
+                </TableCell>
               </TableRow>
-            </TableHeader>
-            <TableBody>
-              {data.bookedAppointments.map((booking) => (
-                <TableRow key={booking.appointmentId}>
-                  <TableCell>{booking.doctorName}</TableCell>
-                  <TableCell>{formatDateTime(booking.startsAt)}</TableCell>
-                  <TableCell>
-                    <Badge variant="outline">{booking.status}</Badge>
-                  </TableCell>
-                </TableRow>
-              ))}
-              {data.bookedAppointments.length === 0 && (
-                <TableRow>
-                  <TableCell className="text-center text-muted-foreground" colSpan={3}>
-                    No bookings yet.
-                  </TableCell>
-                </TableRow>
-              )}
-            </TableBody>
-          </Table>
-        </div>
-      </FramePanel>
-    </Frame>
+            )}
+          </TableBody>
+        </Table>
+      </Frame>
+    </section>
   );
 }

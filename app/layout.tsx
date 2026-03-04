@@ -1,36 +1,25 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
-import { Cormorant } from "next/font/google";
 import localFont from "next/font/local";
+import { Cormorant_Garamond } from "next/font/google";
 import { ThemeProvider } from "@/components/theme-provider";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
-
-const cormorant = Cormorant({
+const cormorant = Cormorant_Garamond({
   variable: "--font-cormorant",
   subsets: ["latin"],
-  weight: ["400", "500", "600", "700"],
+  weight: ["300", "400", "500", "600", "700"],
 });
 
 const atAeroRegular = localFont({
   src: "./fonts/AtAero-Regular.woff2",
-  variable: "--font-at-aero-regular",
-  display: "swap",
+  variable: "--font-AtAero-regular",
+  weight: "400",
 });
 
 const atAeroMedium = localFont({
   src: "./fonts/AtAero-Medium.woff2",
-  variable: "--font-at-aero-medium",
-  display: "swap",
+  variable: "--font-AtAero-medium",
+  weight: "500",
 });
 
 export const metadata: Metadata = {
@@ -46,7 +35,7 @@ export default async function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body
-        className={`${geistSans.variable} ${geistMono.variable} ${cormorant.variable} ${atAeroRegular.variable} ${atAeroMedium.variable} antialiased`}
+        className={`${cormorant.variable} antialiased`}
       >
         <ThemeProvider
           attribute="class"

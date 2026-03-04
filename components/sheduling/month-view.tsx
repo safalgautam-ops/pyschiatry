@@ -44,6 +44,12 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
 type HolidayContextAction = "MARK_HOLIDAY" | "CLEAR_HOLIDAY";
@@ -52,6 +58,13 @@ interface MonthViewProps {
   blockedDates?: string[];
   holidayDates?: string[];
   disabledDates?: string[];
+  availableDates?: string[];
+  fullDates?: string[];
+  bookedDates?: string[];
+  bookedDayVariant?: "striped" | "solid";
+  bookedDayLabel?: string;
+  hideEvents?: boolean;
+  fullDayTooltip?: string;
   calendarSystem?: CalendarSystem;
   currentDate: Date;
   events: CalendarEvent[];
@@ -66,12 +79,32 @@ interface MonthViewProps {
     status: "OPEN" | "HELD" | "BLOCKED" | "REMOVE";
   }) => void | Promise<void>;
   onSlotBookAction?: (payload: { event: CalendarEvent }) => void | Promise<void>;
+  onDaySelect?: (payload: {
+    date: Date;
+    dateKey: string;
+    status:
+      | "BOOKED"
+      | "AVAILABLE"
+      | "FULL"
+      | "BLOCKED"
+      | "HOLIDAY"
+      | "DISABLED"
+      | "OUTSIDE"
+      | "DEFAULT";
+  }) => void;
 }
 
 export function MonthView({
   blockedDates = [],
   holidayDates = [],
   disabledDates = [],
+  availableDates = [],
+  fullDates = [],
+  bookedDates = [],
+  bookedDayVariant = "striped",
+  bookedDayLabel = "Booked session",
+  hideEvents = false,
+  fullDayTooltip = "All slots are fully booked for this day.",
   calendarSystem = "gregorian",
   currentDate,
   events,
@@ -80,10 +113,14 @@ export function MonthView({
   onHolidayContextAction,
   onSlotContextAction,
   onSlotBookAction,
+  onDaySelect,
 }: MonthViewProps) {
   const blockedDateSet = useMemo(() => new Set(blockedDates), [blockedDates]);
   const holidayDateSet = useMemo(() => new Set(holidayDates), [holidayDates]);
   const disabledDateSet = useMemo(() => new Set(disabledDates), [disabledDates]);
+  const availableDateSet = useMemo(() => new Set(availableDates), [availableDates]);
+  const fullDateSet = useMemo(() => new Set(fullDates), [fullDates]);
+  const bookedDateSet = useMemo(() => new Set(bookedDates), [bookedDates]);
 
   const days = useMemo(() => {
     const { monthStart, monthEnd } = getCalendarMonthBounds(
@@ -129,7 +166,8 @@ export function MonthView({
   });
 
   return (
-    <div className="contents" data-slot="month-view">
+    <TooltipProvider delayDuration={120}>
+      <div className="contents" data-slot="month-view">
       <div className="grid grid-cols-7 border-border/70 border-b">
         {weekdays.map((day) => (
           <div
@@ -160,6 +198,27 @@ export function MonthView({
               const isBlockedDay = blockedDateSet.has(dateKey);
               const isManagedHoliday = holidayDateSet.has(dateKey);
               const isDisabledDay = disabledDateSet.has(dateKey);
+              const isAvailableDay = availableDateSet.has(dateKey);
+              const isFullDay = fullDateSet.has(dateKey);
+              const isBookedDay = bookedDateSet.has(dateKey);
+              const dayStatus =
+                !isCurrentMonth
+                  ? ("OUTSIDE" as const)
+                  : isDisabledDay
+                    ? ("DISABLED" as const)
+                  : isManagedHoliday
+                    ? ("HOLIDAY" as const)
+                    : isBlockedDay
+                      ? ("BLOCKED" as const)
+                      : isBookedDay
+                        ? ("BOOKED" as const)
+                        : isAvailableDay
+                          ? ("AVAILABLE" as const)
+                          : isFullDay
+                            ? ("FULL" as const)
+                            : ("DEFAULT" as const);
+              const hideDayEvents =
+                hideEvents || (isCurrentMonth && !isDisabledDay && isBookedDay);
               const cellId = `month-cell-${day.toISOString()}`;
               const allDayEvents = [...spanningEvents, ...dayEvents];
               const allEvents = getAllEventsForDay(events, day);
@@ -176,6 +235,14 @@ export function MonthView({
                   date={day}
                   id={cellId}
                   onClick={() => {
+                    if (onDaySelect) {
+                      onDaySelect({
+                        date: day,
+                        dateKey,
+                        status: dayStatus,
+                      });
+                      return;
+                    }
                     if (!isCurrentMonth || isBlockedDay || isDisabledDay) return;
                     const startTime = new Date(day);
                     startTime.setHours(DefaultStartHour, 0, 0);
@@ -189,7 +256,16 @@ export function MonthView({
                     className="min-h-[calc((var(--event-height)+var(--event-gap))*2)] sm:min-h-[calc((var(--event-height)+var(--event-gap))*3)] lg:min-h-[calc((var(--event-height)+var(--event-gap))*4)]"
                     ref={isReferenceCell ? contentRef : null}
                   >
-                    {sortEvents(allDayEvents).map((event, index) => {
+                    {hideDayEvents &&
+                      isCurrentMonth &&
+                      isBookedDay &&
+                      bookedDayLabel && (
+                        <div className="mt-(--event-gap) px-1 text-[10px] text-emerald-900/85 sm:px-2 sm:text-xs dark:text-emerald-100/85">
+                          {bookedDayLabel}
+                        </div>
+                      )}
+                    {!hideDayEvents &&
+                      sortEvents(allDayEvents).map((event, index) => {
                       const eventStart = new Date(event.start);
                       const eventEnd = new Date(event.end);
                       const isFirstDay = isSameDay(day, eventStart);
@@ -203,17 +279,19 @@ export function MonthView({
                       const isSlotActionBlocked =
                         isBlockedDay || isManagedHoliday || isDisabledDay;
                       const slotId = event.slotId;
+                      const hasSlotOptions = Boolean(
+                        event.slotOptions && event.slotOptions.length > 0,
+                      );
                       const isSlotEvent = Boolean(slotId);
                       const effectiveSlotStatus =
-                        slotId && slotStatus
-                          ? slotStatus
-                          : slotId
-                            ? ("OPEN" as const)
-                            : undefined;
+                        slotStatus ??
+                        (slotId || hasSlotOptions
+                          ? ("OPEN" as const)
+                          : undefined);
                       const bookableContextEnabled =
                         !isSlotActionBlocked &&
                         Boolean(onSlotBookAction) &&
-                        Boolean(slotId) &&
+                        (Boolean(slotId) || hasSlotOptions) &&
                         effectiveSlotStatus === "OPEN";
                       const slotContextMenuEnabled =
                         !isSlotActionBlocked &&
@@ -282,7 +360,7 @@ export function MonthView({
                                 <ContextMenuItem
                                   onSelect={() =>
                                     void onSlotBookAction?.({
-                                      event: { ...event, slotId },
+                                      event,
                                     })
                                   }
                                 >
@@ -354,7 +432,7 @@ export function MonthView({
                       );
                     })}
 
-                    {hasMore && (
+                    {!hideDayEvents && hasMore && (
                       <Popover modal>
                         <PopoverTrigger asChild>
                           <button
@@ -397,18 +475,21 @@ export function MonthView({
                                 const isLastDay = isSameDay(day, eventEnd);
                                 const slotStatus = event.slotStatus;
                                 const slotId = event.slotId;
+                                const hasSlotOptions = Boolean(
+                                  event.slotOptions &&
+                                    event.slotOptions.length > 0,
+                                );
                                 const effectiveSlotStatus =
-                                  slotId && slotStatus
-                                    ? slotStatus
-                                    : slotId
-                                      ? ("OPEN" as const)
-                                      : undefined;
+                                  slotStatus ??
+                                  (slotId || hasSlotOptions
+                                    ? ("OPEN" as const)
+                                    : undefined);
                                 const isSlotActionBlocked =
                                   isBlockedDay || isManagedHoliday || isDisabledDay;
                                 const bookableContextEnabled =
                                   !isSlotActionBlocked &&
                                   Boolean(onSlotBookAction) &&
-                                  Boolean(slotId) &&
+                                  (Boolean(slotId) || hasSlotOptions) &&
                                   effectiveSlotStatus === "OPEN";
                                 const slotContextMenuEnabled =
                                   !isSlotActionBlocked &&
@@ -443,7 +524,7 @@ export function MonthView({
                                         <ContextMenuItem
                                           onSelect={() =>
                                             void onSlotBookAction?.({
-                                              event: { ...event, slotId },
+                                              event,
                                             })
                                           }
                                         >
@@ -528,7 +609,7 @@ export function MonthView({
                 </DroppableCell>
               );
 
-              return (
+              const cell = (
                 <div
                   className={cn(
                     "group border-border/70 border-r border-b last:border-r-0",
@@ -538,15 +619,36 @@ export function MonthView({
                       isBlockedDay &&
                       !isDisabledDay &&
                       "calendar-holiday-pattern text-red-900/75 dark:text-red-200/80",
+                    isCurrentMonth &&
+                      !isDisabledDay &&
+                      !isBlockedDay &&
+                      !isManagedHoliday &&
+                      isBookedDay &&
+                      (bookedDayVariant === "solid"
+                        ? "bg-emerald-100/62 text-emerald-900/85 dark:bg-emerald-500/18 dark:text-emerald-100/85"
+                        : "event-booked-pattern text-emerald-900/85 dark:text-emerald-100/85"),
+                    isCurrentMonth &&
+                      !isDisabledDay &&
+                      !isBlockedDay &&
+                      !isManagedHoliday &&
+                      !isBookedDay &&
+                      isAvailableDay &&
+                      "bg-sky-100/60 dark:bg-sky-500/15",
+                    isCurrentMonth &&
+                      !isDisabledDay &&
+                      !isBlockedDay &&
+                      !isManagedHoliday &&
+                      !isBookedDay &&
+                      !isAvailableDay &&
+                      isFullDay &&
+                      "bg-orange-100/60 dark:bg-orange-500/15",
                   )}
                   data-outside-cell={!isCurrentMonth || undefined}
                   data-disabled-cell={isDisabledDay || undefined}
                   data-today={isToday(day) || undefined}
                   key={day.toString()}
                 >
-                  {onHolidayContextAction ||
-                  onSlotBookAction ||
-                  onSlotContextAction ? (
+                  {onHolidayContextAction ? (
                     <ContextMenu>
                       <ContextMenuTrigger asChild>
                         <div>{cellContent}</div>
@@ -561,35 +663,29 @@ export function MonthView({
                             : format(day, "EEE, MMM d, yyyy")}
                         </ContextMenuLabel>
                         <ContextMenuSeparator />
-                        {onHolidayContextAction ? (
-                          isManagedHoliday ? (
-                            <ContextMenuItem
-                              disabled={isDisabledDay}
-                              onSelect={() =>
-                                void onHolidayContextAction({
-                                  dateKey,
-                                  action: "CLEAR_HOLIDAY",
-                                })
-                              }
-                            >
-                              Remove Holiday
-                            </ContextMenuItem>
-                          ) : (
-                            <ContextMenuItem
-                              disabled={isDisabledDay}
-                              onSelect={() =>
-                                void onHolidayContextAction({
-                                  dateKey,
-                                  action: "MARK_HOLIDAY",
-                                })
-                              }
-                            >
-                              Mark as Holiday
-                            </ContextMenuItem>
-                          )
+                        {isManagedHoliday ? (
+                          <ContextMenuItem
+                            disabled={isDisabledDay}
+                            onSelect={() =>
+                              void onHolidayContextAction({
+                                dateKey,
+                                action: "CLEAR_HOLIDAY",
+                              })
+                            }
+                          >
+                            Remove Holiday
+                          </ContextMenuItem>
                         ) : (
-                          <ContextMenuItem disabled>
-                            No day actions
+                          <ContextMenuItem
+                            disabled={isDisabledDay}
+                            onSelect={() =>
+                              void onHolidayContextAction({
+                                dateKey,
+                                action: "MARK_HOLIDAY",
+                              })
+                            }
+                          >
+                            Mark as Holiday
                           </ContextMenuItem>
                         )}
                       </ContextMenuContent>
@@ -599,10 +695,26 @@ export function MonthView({
                   )}
                 </div>
               );
+
+              if (onDaySelect && dayStatus === "FULL") {
+                return (
+                  <Tooltip key={day.toString()}>
+                    <TooltipTrigger asChild>
+                      {cell}
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {fullDayTooltip}
+                    </TooltipContent>
+                  </Tooltip>
+                );
+              }
+
+              return cell;
             })}
           </div>
         ))}
       </div>
     </div>
+    </TooltipProvider>
   );
 }

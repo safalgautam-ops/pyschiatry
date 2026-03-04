@@ -1,5 +1,13 @@
 export type CalendarView = "month" | "week" | "day" | "agenda";
 
+export interface CalendarSlotOption {
+  slotId: string;
+  doctorUserId: string;
+  doctorName: string;
+  startsAt: Date;
+  endsAt: Date;
+}
+
 export interface CalendarEvent {
   id: string;
   title: string;
@@ -11,6 +19,7 @@ export interface CalendarEvent {
   location?: string;
   slotId?: string;
   slotStatus?: "OPEN" | "HELD" | "BOOKED" | "BLOCKED";
+  slotOptions?: CalendarSlotOption[];
 }
 
 export type EventColor =
@@ -19,4 +28,5 @@ export type EventColor =
   | "violet"
   | "rose"
   | "emerald"
+  | "emeraldStriped"
   | "orange";

@@ -181,8 +181,8 @@ export function EventItem({
     return (
       <EventWrapper
         className={cn(
-          "py-1",
-          durationMinutes < 45 ? "items-center" : "flex-col",
+          "h-full w-full box-border rounded-none py-0",
+          durationMinutes < 45 ? "items-center" : "flex-col justify-start",
           view === "week" ? "text-[10px] sm:text-xs" : "text-xs",
           className,
         )}

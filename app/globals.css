@@ -197,4 +197,30 @@
       transparent 6px 14px
     );
   }
+
+  .event-booked-pattern {
+    background-color: color-mix(in oklab, var(--color-emerald-100) 72%, var(--color-background));
+    background-image: repeating-linear-gradient(
+      -45deg,
+      hsl(152 70% 38% / 0.22) 0 6px,
+      transparent 6px 14px
+    );
+  }
+
+  .event-booked-pattern:hover {
+    background-color: color-mix(in oklab, var(--color-emerald-100) 80%, var(--color-background));
+  }
+
+  .dark .event-booked-pattern {
+    background-color: color-mix(in oklab, var(--color-emerald-900) 46%, var(--color-background));
+    background-image: repeating-linear-gradient(
+      -45deg,
+      hsl(152 85% 68% / 0.28) 0 6px,
+      transparent 6px 14px
+    );
+  }
+
+  .dark .event-booked-pattern:hover {
+    background-color: color-mix(in oklab, var(--color-emerald-900) 55%, var(--color-background));
+  }
 }

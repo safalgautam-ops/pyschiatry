@@ -4,10 +4,10 @@ import {
   respondShareAction,
   sendDoctorMessageAction,
   shareReportAction,
-  updateAppointmentStatusAction,
   uploadReportAction,
 } from "@/lib/actions/doctor-operations-actions";
 import { DoctorScheduleManager } from "@/components/sheduling";
+import { DoctorBookingsTable } from "./doctor-bookings-table";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Frame, FrameDescription, FramePanel, FrameTitle } from "@/components/ui/frame";
@@ -136,79 +136,21 @@ function DoctorBookingsSection({
     id: string;
     patientName: string;
     status: string;
+    cancelReason: string | null;
     startsAt: Date;
     endsAt: Date;
   }>;
 }) {
   return (
-    <Frame>
-      <FramePanel className="p-0">
-        <div className="border-b px-5 py-4">
-          <FrameTitle>Booking Management</FrameTitle>
-          <FrameDescription>
-            Update booked sessions, confirmations, completion, and cancellation.
-          </FrameDescription>
-        </div>
-        <div className="p-5">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Patient</TableHead>
-                <TableHead>Start</TableHead>
-                <TableHead>End</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className="text-right">Action</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {appointments.map((item) => (
-                <TableRow key={item.id}>
-                  <TableCell>{item.patientName}</TableCell>
-                  <TableCell>{formatDateTime(item.startsAt)}</TableCell>
-                  <TableCell>{formatDateTime(item.endsAt)}</TableCell>
-                  <TableCell>
-                    <Badge variant="outline">{item.status}</Badge>
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <form
-                      action={updateAppointmentStatusAction}
-                      className="flex justify-end gap-2"
-                    >
-                      <input name="appointmentId" type="hidden" value={item.id} />
-                      <select
-                        name="status"
-                        defaultValue={item.status}
-                        className="h-9 rounded-md border bg-transparent px-3 text-sm"
-                      >
-                        <option value="BOOKED">BOOKED</option>
-                        <option value="CONFIRMED">CONFIRMED</option>
-                        <option value="COMPLETED">COMPLETED</option>
-                        <option value="CANCELLED">CANCELLED</option>
-                      </select>
-                      <Input
-                        name="cancelReason"
-                        placeholder="Cancel reason"
-                        className="w-40"
-                      />
-                      <Button size="sm" type="submit" variant="outline">
-                        Update
-                      </Button>
-                    </form>
-                  </TableCell>
-                </TableRow>
-              ))}
-              {appointments.length === 0 && (
-                <TableRow>
-                  <TableCell className="text-center text-muted-foreground" colSpan={5}>
-                    No appointment records yet.
-                  </TableCell>
-                </TableRow>
-              )}
-            </TableBody>
-          </Table>
-        </div>
-      </FramePanel>
-    </Frame>
+    <section className="space-y-2">
+      <h2 className="font-cormorant text-2xl leading-none">Booking Management</h2>
+      <p className="font-at-aero-regular text-muted-foreground text-sm">
+        Change status directly from the dropdown. Cancellation asks reason first.
+      </p>
+      <Frame className="w-full">
+        <DoctorBookingsTable appointments={appointments} />
+      </Frame>
+    </section>
   );
 }
 
@@ -337,70 +279,73 @@ function DoctorReportsSection({
   }>;
 }) {
   return (
-    <Frame className="grid gap-1 lg:grid-cols-2">
-      <FramePanel className="p-5">
-        <FrameTitle>Upload Encrypted Report</FrameTitle>
-        <FrameDescription>
-          Uploaded file is encrypted and key-wrapped per authorized user.
-        </FrameDescription>
-        <form action={uploadReportAction} className="mt-3 grid gap-2">
-          <Input name="title" placeholder="Report title" required />
-          <select
-            name="patientUserId"
-            required
-            className="h-9 rounded-md border bg-transparent px-3 text-sm"
-          >
-            <option value="">Select patient</option>
-            {patients.map((patient) => (
-              <option key={patient.userId} value={patient.userId}>
-                {patient.name}
-              </option>
-            ))}
-          </select>
-          <Input name="appointmentId" placeholder="Appointment ID (optional)" />
-          <Input name="file" required type="file" />
-          <Button type="submit">Upload Report</Button>
-        </form>
-      </FramePanel>
+    <div className="space-y-4">
+      <Frame className="grid gap-1 lg:grid-cols-2">
+        <FramePanel className="p-5">
+          <FrameTitle>Upload Encrypted Report</FrameTitle>
+          <FrameDescription>
+            Uploaded file is encrypted and key-wrapped per authorized user.
+          </FrameDescription>
+          <form action={uploadReportAction} className="mt-3 grid gap-2">
+            <Input name="title" placeholder="Report title" required />
+            <select
+              name="patientUserId"
+              required
+              className="h-9 rounded-md border bg-transparent px-3 text-sm"
+            >
+              <option value="">Select patient</option>
+              {patients.map((patient) => (
+                <option key={patient.userId} value={patient.userId}>
+                  {patient.name}
+                </option>
+              ))}
+            </select>
+            <Input name="appointmentId" placeholder="Appointment ID (optional)" />
+            <Input name="file" required type="file" />
+            <Button type="submit">Upload Report</Button>
+          </form>
+        </FramePanel>
 
-      <FramePanel className="p-0">
-        <div className="border-b px-5 py-4">
-          <FrameTitle>Incoming Shares</FrameTitle>
-        </div>
-        <div className="space-y-2 p-5">
-          {incomingShares.map((share) => (
-            <div key={share.id} className="rounded-md border px-3 py-2">
-              <p className="font-medium">{share.documentTitle}</p>
-              <p className="text-muted-foreground text-xs">From: {share.fromDoctorName}</p>
-              <div className="mt-2 flex gap-2">
-                <form action={respondShareAction}>
-                  <input type="hidden" name="shareId" value={share.id} />
-                  <input type="hidden" name="decision" value="ACCEPTED" />
-                  <Button size="sm" type="submit">
-                    Accept
-                  </Button>
-                </form>
-                <form action={respondShareAction}>
-                  <input type="hidden" name="shareId" value={share.id} />
-                  <input type="hidden" name="decision" value="REJECTED" />
-                  <Button size="sm" type="submit" variant="outline">
-                    Reject
-                  </Button>
-                </form>
+        <FramePanel className="p-0">
+          <div className="border-b px-5 py-4">
+            <FrameTitle>Incoming Shares</FrameTitle>
+          </div>
+          <div className="space-y-2 p-5">
+            {incomingShares.map((share) => (
+              <div key={share.id} className="rounded-md border px-3 py-2">
+                <p className="font-medium">{share.documentTitle}</p>
+                <p className="text-muted-foreground text-xs">From: {share.fromDoctorName}</p>
+                <div className="mt-2 flex gap-2">
+                  <form action={respondShareAction}>
+                    <input type="hidden" name="shareId" value={share.id} />
+                    <input type="hidden" name="decision" value="ACCEPTED" />
+                    <Button size="sm" type="submit">
+                      Accept
+                    </Button>
+                  </form>
+                  <form action={respondShareAction}>
+                    <input type="hidden" name="shareId" value={share.id} />
+                    <input type="hidden" name="decision" value="REJECTED" />
+                    <Button size="sm" type="submit" variant="outline">
+                      Reject
+                    </Button>
+                  </form>
+                </div>
               </div>
-            </div>
-          ))}
-          {incomingShares.length === 0 && (
-            <p className="text-muted-foreground text-sm">No incoming shares.</p>
-          )}
-        </div>
-      </FramePanel>
+            ))}
+            {incomingShares.length === 0 && (
+              <p className="text-muted-foreground text-sm">No incoming shares.</p>
+            )}
+          </div>
+        </FramePanel>
+      </Frame>
 
-      <FramePanel className="lg:col-span-2 p-0">
-        <div className="border-b px-5 py-4">
-          <FrameTitle>Reports and Sharing</FrameTitle>
-        </div>
-        <div className="p-5">
+      <section className="space-y-2">
+        <h2 className="font-cormorant text-2xl leading-none">Reports and Sharing</h2>
+        <p className="font-at-aero-regular text-muted-foreground text-sm">
+          Encrypted reports with controlled doctor-to-doctor sharing.
+        </p>
+        <Frame className="w-full">
           <Table>
             <TableHeader>
               <TableRow>
@@ -448,9 +393,9 @@ function DoctorReportsSection({
               )}
             </TableBody>
           </Table>
-        </div>
-      </FramePanel>
-    </Frame>
+        </Frame>
+      </section>
+    </div>
   );
 }
 

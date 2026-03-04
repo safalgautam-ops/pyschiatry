@@ -61,14 +61,14 @@ VALUES
     '11111111-1111-4111-8111-111111111111',
     'America/New_York',
     60,
-    10
+    0
   ),
   (
     '32222222-2222-4222-8222-222222222222',
     '22222222-2222-4222-8222-222222222222',
     'America/Los_Angeles',
     60,
-    10
+    0
   )
 ON DUPLICATE KEY UPDATE
   `timezone` = VALUES(`timezone`),

@@ -101,7 +101,7 @@ export async function seedDefaultDoctors(connection: Connection) {
         `
           INSERT INTO doctor_profile (
             id, user_id, timezone, default_session_minutes, buffer_minutes
-          ) VALUES (?, ?, ?, 60, 10)
+          ) VALUES (?, ?, ?, 60, 0)
           ON DUPLICATE KEY UPDATE
             timezone = VALUES(timezone),
             default_session_minutes = VALUES(default_session_minutes),

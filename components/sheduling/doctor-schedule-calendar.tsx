@@ -2,7 +2,7 @@
 
 import { format } from "date-fns";
 import { useRouter } from "next/navigation";
-import { useMemo, useTransition } from "react";
+import { useMemo, useState, useTransition } from "react";
 import { toast } from "sonner";
 import { EventCalendarSystemSwitch } from "./event-calendar-system-switch";
 import type { CalendarSystem } from "./calendar-system";
@@ -17,6 +17,7 @@ import {
 type DoctorScheduleCalendarProps = {
   blockedDates: string[];
   holidayDates: string[];
+  bookedDates: string[];
   events: CalendarEvent[];
   className?: string;
   defaultCalendarSystem?: CalendarSystem;
@@ -47,6 +48,7 @@ function buildPastDateKeys() {
 export function DoctorScheduleCalendar({
   blockedDates,
   holidayDates,
+  bookedDates,
   events,
   className,
   defaultCalendarSystem = "nepali",
@@ -55,6 +57,8 @@ export function DoctorScheduleCalendar({
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const disabledPastDates = useMemo(() => buildPastDateKeys(), []);
+  const [currentDate, setCurrentDate] = useState(new Date());
+  const [view, setView] = useState<CalendarView>(initialView);
 
   const runMutation = (
     callback: () => Promise<void>,
@@ -76,12 +80,30 @@ export function DoctorScheduleCalendar({
       allowCreate={false}
       blockedDates={blockedDates}
       className={className}
+      currentDate={currentDate}
       defaultCalendarSystem={defaultCalendarSystem}
+      disabledDates={disabledPastDates}
       events={events}
       holidayDates={holidayDates}
-      initialView={initialView}
+      monthBookedDates={bookedDates}
+      onCurrentDateChange={setCurrentDate}
+      onMonthDaySelect={({ date, status }) => {
+        if (status === "OUTSIDE" || status === "DISABLED") return;
+        setCurrentDate(date);
+        setView("day");
+      }}
+      onViewChange={(nextView) => {
+        if (
+          nextView === "month" ||
+          nextView === "week" ||
+          nextView === "day" ||
+          nextView === "agenda"
+        ) {
+          setView(nextView);
+        }
+      }}
       restrictPastNavigation
-      disabledDates={disabledPastDates}
+      view={view}
       onHolidayContextAction={({ action, dateKey }) => {
         if (isPending) return;
 

@@ -144,8 +144,10 @@ export async function createManualSlotAction(formData: FormData) {
 
 export async function bookPatientSlotAction(formData: FormData) {
   const user = await requireAuthenticatedUser();
+  const bookingMessage = asString(formData.get("bookingMessage")).trim();
   await bookPatientAppointmentSlot(user, {
     slotId: asString(formData.get("slotId")),
+    bookingMessage: bookingMessage || undefined,
   });
   revalidatePath("/dashboard");
   revalidatePath("/dashboard/patient");

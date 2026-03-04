@@ -69,6 +69,7 @@ export type DoctorWorkspaceData = {
     patientUserId: string;
     patientName: string;
     status: string;
+    cancelReason: string | null;
     startsAt: Date;
     endsAt: Date;
   }>;
@@ -425,6 +426,7 @@ export async function getDoctorWorkspaceData(
           patientUserId: appointments.patientUserId,
           patientName: user.name,
           status: appointments.status,
+          cancelReason: appointments.cancelReason,
           startsAt: appointmentSlots.startsAt,
           endsAt: appointmentSlots.endsAt,
         })
@@ -713,6 +715,15 @@ export async function applyNepalDefaultWeeklySchedule(
         endTime: input.endTime,
       })),
     );
+
+    // Keep the simplified flow consistent: 60 min sessions with no buffer gap.
+    await tx
+      .update(doctorProfile)
+      .set({
+        defaultSessionMinutes: 60,
+        bufferMinutes: 0,
+      })
+      .where(eq(doctorProfile.userId, doctorUserId));
   });
 }
 
@@ -1037,7 +1048,8 @@ export async function generateSlotsFromRules(
   ]);
 
   const sessionMinutes = profile?.defaultSessionMinutes ?? 60;
-  const bufferMinutes = profile?.bufferMinutes ?? 10;
+  // Keep slots aligned on predictable boundaries for calendar UX.
+  const bufferMinutes = 0;
   const exceptionByDate = new Map(
     exceptions.map((item) => [dateOnly(item.date), item]),
   );
@@ -1086,6 +1098,21 @@ export async function generateSlotsFromRules(
   }
 
   if (values.length === 0) return { attempted: 0 };
+
+  const rangeStart = new Date(startDate);
+  rangeStart.setHours(0, 0, 0, 0);
+  const rangeEnd = new Date(endDate);
+  rangeEnd.setHours(23, 59, 59, 999);
+
+  // Remove old non-booked slots in the same range so regeneration stays clean.
+  await db.delete(appointmentSlots).where(
+    and(
+      eq(appointmentSlots.doctorUserId, doctorUserId),
+      gte(appointmentSlots.startsAt, rangeStart),
+      lte(appointmentSlots.startsAt, rangeEnd),
+      inArray(appointmentSlots.status, ["OPEN", "HELD", "BLOCKED"]),
+    ),
+  );
 
   await db
     .insert(appointmentSlots)
@@ -1459,7 +1486,7 @@ export async function getPatientScheduleData(
 
 export async function bookPatientAppointmentSlot(
   currentUser: AuthenticatedUser,
-  input: { slotId: string },
+  input: { slotId: string; bookingMessage?: string },
 ) {
   const patientUserId = await requirePatient(currentUser);
 
@@ -1560,7 +1587,14 @@ export async function bookPatientAppointmentSlot(
     throw new Error("Slot booking failed. It may already be booked.");
   }
 
-  await getOrCreateDoctorPatientRoom(slot.doctorUserId, patientUserId);
+  const roomId = await getOrCreateDoctorPatientRoom(slot.doctorUserId, patientUserId);
+  const bookingMessage = input.bookingMessage?.trim();
+  if (bookingMessage) {
+    await sendPatientChatMessage(currentUser, {
+      roomId,
+      text: bookingMessage.slice(0, 4000),
+    });
+  }
 }
 
 export async function uploadEncryptedReport(
