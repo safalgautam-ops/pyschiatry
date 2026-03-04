@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState, useTransition } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 
@@ -37,7 +38,9 @@ type AppointmentStatus = "BOOKED" | "CONFIRMED" | "COMPLETED" | "CANCELLED";
 
 type DoctorBookingRow = {
   id: string;
+  patientUserId?: string;
   patientName: string;
+  patientEmail?: string;
   status: string;
   cancelReason: string | null;
   startsAt: Date | string;
@@ -46,6 +49,7 @@ type DoctorBookingRow = {
 
 type DoctorBookingsTableProps = {
   appointments: DoctorBookingRow[];
+  sessionHrefBase?: string;
 };
 
 function formatDateTime(value: Date | string | null) {
@@ -80,7 +84,10 @@ function mapReasons(rows: DoctorBookingRow[]) {
   ) as Record<string, string>;
 }
 
-export function DoctorBookingsTable({ appointments }: DoctorBookingsTableProps) {
+export function DoctorBookingsTable({
+  appointments,
+  sessionHrefBase = "/dashboard/doctor/bookings",
+}: DoctorBookingsTableProps) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
 
@@ -189,6 +196,7 @@ export function DoctorBookingsTable({ appointments }: DoctorBookingsTableProps) 
       <Table>
         <TableHeader>
           <TableRow>
+            <TableHead>Session</TableHead>
             <TableHead>Patient</TableHead>
             <TableHead>Start</TableHead>
             <TableHead>End</TableHead>
@@ -202,7 +210,25 @@ export function DoctorBookingsTable({ appointments }: DoctorBookingsTableProps) 
             const cancelReason = reasonById[item.id];
             return (
               <TableRow key={item.id}>
-                <TableCell>{item.patientName}</TableCell>
+                <TableCell className="font-mono text-xs">
+                  <Link
+                    className="font-at-aero-medium text-foreground hover:underline"
+                    href={`${sessionHrefBase}/${item.id}`}
+                  >
+                    {item.id}
+                  </Link>
+                </TableCell>
+                <TableCell>
+                  <Link
+                    className="font-at-aero-medium text-foreground hover:underline"
+                    href={`${sessionHrefBase}/${item.id}`}
+                  >
+                    {item.patientName}
+                  </Link>
+                  <p className="text-muted-foreground text-xs">
+                    {item.patientEmail ?? "-"}
+                  </p>
+                </TableCell>
                 <TableCell>{formatDateTime(item.startsAt)}</TableCell>
                 <TableCell>{formatDateTime(item.endsAt)}</TableCell>
                 <TableCell>
@@ -215,7 +241,7 @@ export function DoctorBookingsTable({ appointments }: DoctorBookingsTableProps) 
                     <SelectTrigger className="w-[180px]">
                       <SelectValue />
                     </SelectTrigger>
-                    <SelectContent align="start">
+                    <SelectContent align="start" position="popper">
                       <SelectItem value="BOOKED">BOOKED</SelectItem>
                       <SelectItem value="CONFIRMED">CONFIRMED</SelectItem>
                       <SelectItem value="COMPLETED">COMPLETED</SelectItem>
@@ -233,7 +259,7 @@ export function DoctorBookingsTable({ appointments }: DoctorBookingsTableProps) 
           })}
           {appointments.length === 0 && (
             <TableRow>
-              <TableCell className="text-center text-muted-foreground" colSpan={5}>
+              <TableCell className="text-center text-muted-foreground" colSpan={6}>
                 No appointment records yet.
               </TableCell>
             </TableRow>

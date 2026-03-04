@@ -2,7 +2,6 @@
 
 import * as React from "react"
 import { IconBrightness, type Icon } from "@tabler/icons-react"
-import { useTheme } from "next-themes"
 import Link from "next/link"
 
 import {
@@ -13,7 +12,7 @@ import {
   SidebarMenuItem,
 } from "@/components/ui/sidebar"
 import { Skeleton } from "@/components/ui/skeleton"
-import { Switch } from "@/components/ui/switch"
+import { AnimatedThemeToggler } from "../animated-theme-toggle"
 
 export function NavSecondary({
   items,
@@ -25,7 +24,6 @@ export function NavSecondary({
     icon: Icon
   }[]
 } & React.ComponentPropsWithoutRef<typeof SidebarGroup>) {
-  const { resolvedTheme, setTheme } = useTheme()
   const [mounted, setMounted] = React.useState(false)
 
   React.useEffect(() => {
@@ -52,13 +50,7 @@ export function NavSecondary({
                 <IconBrightness />
                 <span>Dark Mode</span>
                 {mounted ? (
-                  <Switch
-                    className="ml-auto"
-                    checked={resolvedTheme !== "light"}
-                    onCheckedChange={() =>
-                      setTheme(resolvedTheme === "dark" ? "light" : "dark")
-                    }
-                  />
+                  <AnimatedThemeToggler/>
                 ) : (
                   <Skeleton className="ml-auto h-4 w-8 rounded-full" />
                 )}

@@ -13,9 +13,6 @@ import {
   subWeeks,
 } from "date-fns";
 import {
-  assignStaffToDoctorAction,
-  linkPatientToDoctorAction,
-  setDoctorPatientStatusAction,
   setDoctorStaffStatusAction,
 } from "@/lib/actions/dashboard-actions";
 import {
@@ -26,6 +23,8 @@ import {
   setDoctorSlotStatusAction,
 } from "@/lib/actions/doctor-operations-actions";
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
+import { IconCirclePlusFilled } from "@tabler/icons-react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo, useState, useTransition } from "react";
 import { toast } from "sonner";
@@ -58,11 +57,6 @@ import { Frame, FramePanel } from "@/components/ui/frame";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
-import {
   Select,
   SelectContent,
   SelectItem,
@@ -82,19 +76,9 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useCalendarSystemPreference } from "@/hooks/use-calendar-system-preference";
 
-type UserOption = {
-  id: string;
-  name: string;
-  email: string;
-  role: string;
-};
-
 type DashboardWorkspaceProps = {
   user: AuthenticatedUser;
   summary: DashboardSummary;
-  doctorOptions: UserOption[];
-  patientOptions: UserOption[];
-  staffOptions: UserOption[];
 };
 
 type BookingDraft = {
@@ -225,7 +209,7 @@ function SummaryCards({
   return (
     <Frame className="grid grid-cols-1 gap-1 md:grid-cols-2 xl:grid-cols-3">
       {items.map((item) => (
-        <FramePanel key={item.label} className="space-y-2 p-5">
+        <FramePanel key={item.label} className="space-y-2 p-5 m-0! h-full">
           <p className="font-at-aero-medium text-muted-foreground text-sm">
             {item.label}
           </p>
@@ -239,38 +223,11 @@ function SummaryCards({
 export function DashboardWorkspace({
   user,
   summary,
-  doctorOptions,
-  patientOptions,
-  staffOptions,
 }: DashboardWorkspaceProps) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
 
-  const canManageAssignments =
-    user.role === "DOCTOR" || (user.role === "STAFF" && summary.isStaffAdmin);
-
-  const defaultDoctorId = useMemo(() => {
-    if (user.role === "DOCTOR") return user.id;
-    return summary.doctorScope[0] ?? "";
-  }, [summary.doctorScope, user.id, user.role]);
-
-  const [linkDoctorId, setLinkDoctorId] = useState(defaultDoctorId);
-  const [linkPatientId, setLinkPatientId] = useState("");
-
-  const [assignDoctorId, setAssignDoctorId] = useState(defaultDoctorId);
-  const [assignStaffId, setAssignStaffId] = useState("");
-  const [assignStaffRole, setAssignStaffRole] = useState<"ADMIN" | "RECEPTION">(
-    "RECEPTION",
-  );
-
-  const manageDoctors = useMemo(() => {
-    if (user.role === "DOCTOR") {
-      return doctorOptions.filter((doctor) => doctor.id === user.id);
-    }
-    if (summary.doctorScope.length === 0) return [];
-    const scopedIds = new Set(summary.doctorScope);
-    return doctorOptions.filter((doctor) => scopedIds.has(doctor.id));
-  }, [doctorOptions, summary.doctorScope, user.id, user.role]);
+  const canManageAssignments = user.role === "DOCTOR";
 
   const bookedScheduleEvents = useMemo<CalendarEvent[]>(() => {
     if (user.role === "PATIENT") {
@@ -1041,231 +998,22 @@ export function DashboardWorkspace({
         </FramePanel>
       </Frame>
 
-      <Tabs defaultValue="patients" className="w-full gap-4">
+      <Tabs defaultValue="staff" className="w-full gap-4">
         <div className="flex items-center justify-between">
           <TabsList>
-            <TabsTrigger value="patients">Patients</TabsTrigger>
             <TabsTrigger value="staff">Staff</TabsTrigger>
             <TabsTrigger value="appointments">Appointments</TabsTrigger>
           </TabsList>
 
           {canManageAssignments && (
-            <div className="flex items-center gap-2">
-              <Popover>
-                <PopoverTrigger asChild>
-                  <Button size="sm" variant="outline">
-                    Link Patient
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent className="space-y-3">
-                  <div className="font-at-aero-medium text-sm">
-                    Create doctor-patient link
-                  </div>
-                  <div className="space-y-2">
-                    <Select
-                      onValueChange={setLinkDoctorId}
-                      value={linkDoctorId}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select doctor" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {manageDoctors.map((doctor) => (
-                          <SelectItem key={doctor.id} value={doctor.id}>
-                            {doctor.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-
-                    <Select
-                      onValueChange={setLinkPatientId}
-                      value={linkPatientId}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select patient" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {patientOptions.map((patient) => (
-                          <SelectItem key={patient.id} value={patient.id}>
-                            {patient.name} ({patient.email})
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-
-                    <Button
-                      className="w-full"
-                      disabled={!linkDoctorId || !linkPatientId || isPending}
-                      onClick={() =>
-                        runAction(() =>
-                          linkPatientToDoctorAction({
-                            doctorUserId: linkDoctorId,
-                            patientUserId: linkPatientId,
-                          }),
-                        )
-                      }
-                      size="sm"
-                    >
-                      Save Link
-                    </Button>
-                  </div>
-                </PopoverContent>
-              </Popover>
-
-              <Popover>
-                <PopoverTrigger asChild>
-                  <Button size="sm">Assign Staff</Button>
-                </PopoverTrigger>
-                <PopoverContent className="space-y-3">
-                  <div className="font-at-aero-medium text-sm">
-                    Create doctor-staff assignment
-                  </div>
-                  <div className="space-y-2">
-                    <Select
-                      onValueChange={setAssignDoctorId}
-                      value={assignDoctorId}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select doctor" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {manageDoctors.map((doctor) => (
-                          <SelectItem key={doctor.id} value={doctor.id}>
-                            {doctor.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-
-                    <Select
-                      onValueChange={setAssignStaffId}
-                      value={assignStaffId}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select staff" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {staffOptions.map((staff) => (
-                          <SelectItem key={staff.id} value={staff.id}>
-                            {staff.name} ({staff.email})
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-
-                    <Select
-                      onValueChange={(value: "ADMIN" | "RECEPTION") =>
-                        setAssignStaffRole(value)
-                      }
-                      value={assignStaffRole}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select tenant role" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="ADMIN">ADMIN</SelectItem>
-                        <SelectItem value="RECEPTION">RECEPTION</SelectItem>
-                      </SelectContent>
-                    </Select>
-
-                    <Button
-                      className="w-full"
-                      disabled={!assignDoctorId || !assignStaffId || isPending}
-                      onClick={() =>
-                        runAction(() =>
-                          assignStaffToDoctorAction({
-                            doctorUserId: assignDoctorId,
-                            staffUserId: assignStaffId,
-                            staffRole: assignStaffRole,
-                          }),
-                        )
-                      }
-                      size="sm"
-                    >
-                      Save Assignment
-                    </Button>
-                  </div>
-                </PopoverContent>
-              </Popover>
-            </div>
+            <Button asChild size="sm" className="hidden h-7 sm:flex">
+              <Link href="/dashboard/doctor/staff">
+                <IconCirclePlusFilled />
+                <span>Add staff</span>
+              </Link>
+            </Button>
           )}
         </div>
-
-        <TabsContent value="patients">
-          <section className="space-y-2">
-            <h2 className="font-cormorant text-2xl leading-none">
-              Doctor-Patient Links
-            </h2>
-            <p className="font-at-aero-regular text-muted-foreground text-sm">
-              Strictly scoped by doctor tenant (`doctor_patients`).
-            </p>
-            <Frame className="w-full">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Doctor</TableHead>
-                    <TableHead>Patient</TableHead>
-                    <TableHead>Email</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Created</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {summary.tenantPatients.length === 0 ? (
-                    <TableRow>
-                      <TableCell
-                        colSpan={5}
-                        className="text-center text-muted-foreground"
-                      >
-                        No doctor-patient links found.
-                      </TableCell>
-                    </TableRow>
-                  ) : (
-                    summary.tenantPatients.map((item) => (
-                      <TableRow key={item.id}>
-                        <TableCell>{item.doctorName}</TableCell>
-                        <TableCell>{item.patientName}</TableCell>
-                        <TableCell>{item.patientEmail}</TableCell>
-                        <TableCell>
-                          {canManageAssignments ? (
-                            <Select
-                              defaultValue={item.status}
-                              onValueChange={(
-                                value: "ACTIVE" | "BLOCKED" | "ARCHIVED",
-                              ) =>
-                                runAction(() =>
-                                  setDoctorPatientStatusAction({
-                                    doctorPatientId: item.id,
-                                    status: value,
-                                  }),
-                                )
-                              }
-                            >
-                              <SelectTrigger className="w-[140px]">
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="ACTIVE">ACTIVE</SelectItem>
-                                <SelectItem value="BLOCKED">BLOCKED</SelectItem>
-                                <SelectItem value="ARCHIVED">
-                                  ARCHIVED
-                                </SelectItem>
-                              </SelectContent>
-                            </Select>
-                          ) : (
-                            <Badge variant="outline">{item.status}</Badge>
-                          )}
-                        </TableCell>
-                        <TableCell>{formatDateTime(item.createdAt)}</TableCell>
-                      </TableRow>
-                    ))
-                  )}
-                </TableBody>
-              </Table>
-            </Frame>
-          </section>
-        </TabsContent>
 
         <TabsContent value="staff">
           <section className="space-y-2">

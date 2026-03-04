@@ -117,10 +117,7 @@ function DoctorOverviewSection({
               <Link href="/dashboard/doctor/bookings">Manage Bookings</Link>
             </Button>
             <Button asChild size="sm" variant="outline">
-              <Link href="/dashboard/doctor/chat">Open Chat</Link>
-            </Button>
-            <Button asChild size="sm" variant="outline">
-              <Link href="/dashboard/doctor/reports">Reports</Link>
+              <Link href="/dashboard/doctor/bookings">Open Session Workspaces</Link>
             </Button>
           </div>
         </FramePanel>

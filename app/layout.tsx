@@ -12,13 +12,13 @@ const cormorant = Cormorant_Garamond({
 
 const atAeroRegular = localFont({
   src: "./fonts/AtAero-Regular.woff2",
-  variable: "--font-AtAero-regular",
+  variable: "--font-at-aero-regular",
   weight: "400",
 });
 
 const atAeroMedium = localFont({
   src: "./fonts/AtAero-Medium.woff2",
-  variable: "--font-AtAero-medium",
+  variable: "--font-at-aero-medium",
   weight: "500",
 });
 
@@ -35,7 +35,7 @@ export default async function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body
-        className={`${cormorant.variable} antialiased`}
+        className={`${atAeroRegular.className} ${cormorant.variable} ${atAeroRegular.variable} ${atAeroMedium.variable} antialiased`}
       >
         <ThemeProvider
           attribute="class"

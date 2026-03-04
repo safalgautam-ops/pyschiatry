@@ -1,5 +1,6 @@
 import { db } from "@/db";
 import {
+  account,
   appointmentSlots,
   appointments,
   doctorPatients,
@@ -8,9 +9,16 @@ import {
   reportAccessRequests,
   scheduleExceptions,
   staffProfile,
+  userKeys,
   user,
 } from "@/drizzle";
 import type { AppRole, AuthenticatedUser } from "@/lib/auth/session";
+import {
+  sendMailSafely,
+  sendStaffAccountCreatedEmailToDoctor,
+  sendStaffAccountCreatedEmailToStaff,
+} from "@/lib/mailer";
+import { hashPassword } from "better-auth/crypto";
 import {
   and,
   asc,
@@ -28,6 +36,68 @@ import crypto from "node:crypto";
 
 const APPOINTMENT_ACTIVE_STATUSES = ["BOOKED", "CONFIRMED"] as const;
 const PATIENT_LINK_ACTIVE_STATUSES = ["ACTIVE"] as const;
+const STAFF_ASSIGNMENT_ROLES = ["ADMIN", "RECEPTION"] as const;
+
+function makeSignature() {
+  return crypto.randomBytes(32).toString("hex");
+}
+
+function getUserKeyEncryptionSecret() {
+  const secret =
+    process.env.USER_KEYS_ENCRYPTION_SECRET ??
+    process.env.BETTER_AUTH_SECRET ??
+    process.env.AUTH_SECRET;
+  if (secret) return secret;
+  return "development-only-user-key-secret";
+}
+
+function fingerprintPublicKey(publicKeyPem: string) {
+  return crypto.createHash("sha256").update(publicKeyPem).digest("hex");
+}
+
+function encryptPrivateKeyForStorage(privateKeyPem: string, signature: string) {
+  const encryptionSecret = getUserKeyEncryptionSecret();
+  const key = crypto
+    .createHash("sha256")
+    .update(`${encryptionSecret}:${signature}`)
+    .digest();
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const encrypted = Buffer.concat([
+    cipher.update(privateKeyPem, "utf8"),
+    cipher.final(),
+  ]);
+  const tag = cipher.getAuthTag();
+
+  return JSON.stringify({
+    version: 1,
+    algorithm: "aes-256-gcm",
+    iv: iv.toString("base64"),
+    tag: tag.toString("base64"),
+    ciphertext: encrypted.toString("base64"),
+  });
+}
+
+async function generateEd25519PemKeyPair() {
+  return await new Promise<{ publicKey: string; privateKey: string }>(
+    (resolve, reject) => {
+      crypto.generateKeyPair(
+        "ed25519",
+        {
+          publicKeyEncoding: { format: "pem", type: "spki" },
+          privateKeyEncoding: { format: "pem", type: "pkcs8" },
+        },
+        (error, publicKey, privateKey) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          resolve({ publicKey, privateKey });
+        },
+      );
+    },
+  );
+}
 
 export type TenantPatientRow = {
   id: string;
@@ -47,6 +117,8 @@ export type TenantStaffRow = {
   staffUserId: string;
   staffName: string;
   staffEmail: string;
+  staffPhone: string | null;
+  username: string | null;
   staffRole: string;
   isActive: boolean;
   createdAt: Date;
@@ -115,6 +187,32 @@ export type DashboardSummary = {
   tenantOpenSlots: TenantOpenSlotRow[];
   patientAppointments: PatientAppointmentRow[];
   patientAvailableSlots: PatientAvailableSlotRow[];
+};
+
+export type CreateDoctorStaffInput = {
+  name: string;
+  email: string;
+  phone: string;
+  username: string;
+  password: string;
+  staffRole: (typeof STAFF_ASSIGNMENT_ROLES)[number];
+  jobTitle?: string;
+  address?: string;
+  notes?: string;
+};
+
+export type StaffOnboardingStatus = {
+  required: boolean;
+  profile: {
+    name: string;
+    email: string;
+    phone: string;
+    username: string;
+    staffRole: string;
+    jobTitle: string;
+    address: string;
+    notes: string;
+  } | null;
 };
 
 type ScopeDetails = {
@@ -417,15 +515,53 @@ export async function getDashboardSummary(
     }),
   );
 
-  const tenantStaffRows =
-    scope.doctorScope.length > 0
-      ? await db
+  let tenantStaffRows: Array<{
+    id: string;
+    doctorUserId: string;
+    staffUserId: string;
+    staffName: string;
+    staffEmail: string;
+    staffPhone: string | null;
+    username: string | null;
+    staffRole: string;
+    isActive: boolean;
+    createdAt: Date;
+  }> = [];
+
+  if (scope.doctorScope.length > 0) {
+    try {
+      tenantStaffRows = await db
+        .select({
+          id: doctorStaff.id,
+          doctorUserId: doctorStaff.doctorUserId,
+          staffUserId: doctorStaff.staffUserId,
+          staffName: user.name,
+          staffEmail: user.email,
+          staffPhone: user.phone,
+          username: staffProfile.username,
+          staffRole: doctorStaff.staffRole,
+          isActive: doctorStaff.isActive,
+          createdAt: doctorStaff.createdAt,
+        })
+        .from(doctorStaff)
+        .innerJoin(user, eq(doctorStaff.staffUserId, user.id))
+        .leftJoin(staffProfile, eq(doctorStaff.staffUserId, staffProfile.userId))
+        .where(inArray(doctorStaff.doctorUserId, scope.doctorScope))
+        .orderBy(desc(doctorStaff.createdAt))
+        .limit(20);
+    } catch (error) {
+      try {
+        // Backward-compatible fallback for environments where new staff_profile
+        // columns are not migrated yet.
+        tenantStaffRows = await db
           .select({
             id: doctorStaff.id,
             doctorUserId: doctorStaff.doctorUserId,
             staffUserId: doctorStaff.staffUserId,
             staffName: user.name,
             staffEmail: user.email,
+            staffPhone: user.phone,
+            username: sql<string | null>`null`,
             staffRole: doctorStaff.staffRole,
             isActive: doctorStaff.isActive,
             createdAt: doctorStaff.createdAt,
@@ -434,8 +570,12 @@ export async function getDashboardSummary(
           .innerJoin(user, eq(doctorStaff.staffUserId, user.id))
           .where(inArray(doctorStaff.doctorUserId, scope.doctorScope))
           .orderBy(desc(doctorStaff.createdAt))
-          .limit(20)
-      : [];
+          .limit(20);
+      } catch {
+        throw error;
+      }
+    }
+  }
 
   const staffDoctorNameById = await getUserNames(
     tenantStaffRows.map((item) => item.doctorUserId),
@@ -808,6 +948,250 @@ export async function updateDoctorStaffStatus(
       ...(input.staffRole ? { staffRole: input.staffRole } : {}),
     })
     .where(eq(doctorStaff.id, input.doctorStaffId));
+}
+
+export async function createStaffAccountForDoctor(
+  currentUser: AuthenticatedUser,
+  input: CreateDoctorStaffInput,
+) {
+  if (currentUser.role !== "DOCTOR") {
+    throw new Error("Only doctors can create staff accounts.");
+  }
+
+  const name = input.name.trim();
+  const email = input.email.trim().toLowerCase();
+  const phone = input.phone.trim();
+  const username = input.username.trim();
+  const password = input.password;
+  const staffRole = input.staffRole;
+  const jobTitle = input.jobTitle?.trim() ?? "";
+  const address = input.address?.trim() ?? "";
+  const notes = input.notes?.trim() ?? "";
+
+  if (!name) throw new Error("Staff name is required.");
+  if (!email) throw new Error("Staff email is required.");
+  if (!phone) throw new Error("Staff phone is required.");
+  if (!username) throw new Error("Staff username is required.");
+  if (!password || password.length < 8) {
+    throw new Error("Password must be at least 8 characters.");
+  }
+  if (!STAFF_ASSIGNMENT_ROLES.includes(staffRole)) {
+    throw new Error("Invalid staff role.");
+  }
+
+  const existingUser = await db
+    .select({ id: user.id })
+    .from(user)
+    .where(eq(user.email, email))
+    .limit(1);
+  if (existingUser.length > 0) {
+    throw new Error("A user with this email already exists.");
+  }
+
+  const existingUsername = await db
+    .select({ id: staffProfile.id })
+    .from(staffProfile)
+    .where(eq(staffProfile.username, username))
+    .limit(1);
+  if (existingUsername.length > 0) {
+    throw new Error("This staff username is already in use.");
+  }
+
+  const userId = crypto.randomUUID();
+  const signature = makeSignature();
+  const accountId = crypto.randomUUID();
+  const profileId = crypto.randomUUID();
+  const doctorStaffId = crypto.randomUUID();
+  const hashedPassword = await hashPassword(password);
+  const keyPair = await generateEd25519PemKeyPair();
+  const encryptedPrivateKey = encryptPrivateKeyForStorage(
+    keyPair.privateKey,
+    signature,
+  );
+  const keyFingerprint = fingerprintPublicKey(keyPair.publicKey);
+
+  await db.transaction(async (tx) => {
+    await tx.insert(user).values({
+      id: userId,
+      name,
+      email,
+      emailVerified: true,
+      role: "STAFF",
+      phone,
+      signature,
+      isActive: true,
+    });
+
+    await tx.insert(account).values({
+      id: accountId,
+      accountId: email,
+      providerId: "credential",
+      userId,
+      password: hashedPassword,
+    });
+
+    await tx.insert(staffProfile).values({
+      id: profileId,
+      userId,
+      staffRole,
+      username,
+      jobTitle: jobTitle || null,
+      address: address || null,
+      notes: notes || null,
+      mustChangePassword: true,
+      profileCompleted: false,
+      createdByDoctorUserId: currentUser.id,
+    });
+
+    await tx.insert(doctorStaff).values({
+      id: doctorStaffId,
+      doctorUserId: currentUser.id,
+      staffUserId: userId,
+      staffRole,
+      isActive: true,
+      createdAt: new Date(),
+    });
+
+    await tx.insert(userKeys).values({
+      id: crypto.randomUUID(),
+      userId,
+      keyVersion: 1,
+      publicKey: keyPair.publicKey,
+      encryptedPrivateKey,
+      keyFingerprint,
+      signature,
+      isActive: true,
+    });
+  });
+
+  await sendMailSafely("send staff account created email to staff", () =>
+    sendStaffAccountCreatedEmailToStaff({
+      staffEmail: email,
+      staffName: name,
+      doctorName: currentUser.name,
+      temporaryPassword: password,
+      staffRole,
+    }),
+  );
+
+  await sendMailSafely("send staff account created email to doctor", () =>
+    sendStaffAccountCreatedEmailToDoctor({
+      doctorEmail: currentUser.email,
+      doctorName: currentUser.name,
+      staffName: name,
+      staffEmail: email,
+      staffRole,
+    }),
+  );
+}
+
+export async function getStaffOnboardingStatus(
+  currentUser: AuthenticatedUser,
+): Promise<StaffOnboardingStatus> {
+  if (currentUser.role !== "STAFF") {
+    return { required: false, profile: null };
+  }
+
+  const [row] = await db
+    .select({
+      name: user.name,
+      email: user.email,
+      phone: user.phone,
+      username: staffProfile.username,
+      staffRole: staffProfile.staffRole,
+      jobTitle: staffProfile.jobTitle,
+      address: staffProfile.address,
+      notes: staffProfile.notes,
+      mustChangePassword: staffProfile.mustChangePassword,
+      profileCompleted: staffProfile.profileCompleted,
+    })
+    .from(staffProfile)
+    .innerJoin(user, eq(staffProfile.userId, user.id))
+    .where(eq(staffProfile.userId, currentUser.id))
+    .limit(1);
+
+  if (!row) {
+    return { required: false, profile: null };
+  }
+
+  const required =
+    row.mustChangePassword ||
+    !row.profileCompleted ||
+    !row.username ||
+    !row.username.trim();
+
+  return {
+    required,
+    profile: {
+      name: row.name,
+      email: row.email,
+      phone: row.phone ?? "",
+      username: row.username ?? "",
+      staffRole: row.staffRole,
+      jobTitle: row.jobTitle ?? "",
+      address: row.address ?? "",
+      notes: row.notes ?? "",
+    },
+  };
+}
+
+export async function completeStaffOnboardingProfile(
+  currentUser: AuthenticatedUser,
+  input: {
+    name: string;
+    phone: string;
+    username: string;
+    jobTitle?: string;
+    address?: string;
+    notes?: string;
+  },
+) {
+  if (currentUser.role !== "STAFF") {
+    throw new Error("Only staff users can complete onboarding.");
+  }
+
+  const name = input.name.trim();
+  const phone = input.phone.trim();
+  const username = input.username.trim();
+  const jobTitle = input.jobTitle?.trim() ?? "";
+  const address = input.address?.trim() ?? "";
+  const notes = input.notes?.trim() ?? "";
+
+  if (!name) throw new Error("Name is required.");
+  if (!phone) throw new Error("Phone is required.");
+  if (!username) throw new Error("Username is required.");
+
+  const [usernameOwner] = await db
+    .select({ userId: staffProfile.userId })
+    .from(staffProfile)
+    .where(eq(staffProfile.username, username))
+    .limit(1);
+
+  if (usernameOwner && usernameOwner.userId !== currentUser.id) {
+    throw new Error("This username is already used by another staff account.");
+  }
+
+  await db.transaction(async (tx) => {
+    await tx
+      .update(user)
+      .set({
+        name,
+        phone,
+      })
+      .where(eq(user.id, currentUser.id));
+
+    await tx
+      .update(staffProfile)
+      .set({
+        username,
+        jobTitle: jobTitle || null,
+        address: address || null,
+        notes: notes || null,
+        profileCompleted: true,
+        mustChangePassword: false,
+      })
+      .where(eq(staffProfile.userId, currentUser.id));
+  });
 }
 
 export async function searchUsersForRole(role: AppRole, query?: string) {

@@ -1,32 +1,21 @@
+import { StaffOnboardingScreen } from "../staff/_components/staff-onboarding-screen";
 import { DashboardWorkspace } from "@/components/layout/dashboard-workspace";
 import { requireAuthenticatedUser } from "@/lib/auth/session";
 import {
   getDashboardSummary,
-  searchUsersForRoleAsActor,
+  getStaffOnboardingStatus,
 } from "@/lib/dashboard/service";
 
 export async function DashboardScreen() {
   const user = await requireAuthenticatedUser();
+  if (user.role === "STAFF") {
+    const onboarding = await getStaffOnboardingStatus(user);
+    if (onboarding.required && onboarding.profile) {
+      return <StaffOnboardingScreen profile={onboarding.profile} />;
+    }
+  }
+
   const summary = await getDashboardSummary(user);
 
-  const canManageAssignments =
-    user.role === "DOCTOR" || (user.role === "STAFF" && summary.isStaffAdmin);
-
-  const [doctorOptions, patientOptions, staffOptions] = canManageAssignments
-    ? await Promise.all([
-        searchUsersForRoleAsActor(user, "DOCTOR"),
-        searchUsersForRoleAsActor(user, "PATIENT"),
-        searchUsersForRoleAsActor(user, "STAFF"),
-      ])
-    : [[], [], []];
-
-  return (
-    <DashboardWorkspace
-      doctorOptions={doctorOptions}
-      patientOptions={patientOptions}
-      staffOptions={staffOptions}
-      summary={summary}
-      user={user}
-    />
-  );
+  return <DashboardWorkspace summary={summary} user={user} />;
 }

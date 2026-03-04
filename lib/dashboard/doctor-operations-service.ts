@@ -18,7 +18,37 @@ import {
   userKeys,
 } from "@/drizzle";
 import type { AuthenticatedUser } from "@/lib/auth/session";
-import { and, asc, desc, eq, gte, inArray, lte, ne, sql } from "drizzle-orm";
+import {
+  sendAppointmentBookedToDoctorEmail,
+  sendAppointmentBookedToPatientEmail,
+  sendAppointmentBookedToStaffEmail,
+  sendAppointmentConfirmedEmailToPatient,
+  sendMailSafely,
+  sendReportShareRequestEmailToDoctor,
+  sendReportUploadedEmailToPatient,
+} from "@/lib/mailer";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gte,
+  inArray,
+  like,
+  lte,
+  ne,
+  or,
+  sql,
+} from "drizzle-orm";
+import {
+  endOfDay,
+  endOfMonth,
+  endOfWeek,
+  parseISO,
+  startOfDay,
+  startOfMonth,
+  startOfWeek,
+} from "date-fns";
 import crypto from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -31,12 +61,63 @@ const CHAT_ELIGIBLE_APPOINTMENT_STATUSES = [
 ] as const;
 const CALENDAR_SLOT_WINDOW_DAYS = 90;
 const CALENDAR_SLOT_FETCH_LIMIT = 250;
+const SESSION_ROOM_TYPE = "APPOINTMENT_SESSION";
 const REPORT_WRAP_SECRET =
   process.env.REPORT_DEK_WRAP_SECRET ??
   process.env.USER_KEYS_ENCRYPTION_SECRET ??
   process.env.BETTER_AUTH_SECRET ??
   process.env.AUTH_SECRET ??
   "development-only-report-wrap-secret";
+
+export type AppointmentStatus =
+  | "BOOKED"
+  | "CONFIRMED"
+  | "COMPLETED"
+  | "CANCELLED";
+
+export type DoctorBookingPeriod =
+  | "THIS_WEEK"
+  | "THIS_MONTH"
+  | "TODAY"
+  | "SPECIFIC_DAY"
+  | "SPECIFIC_WEEK"
+  | "SPECIFIC_MONTH"
+  | "ALL";
+
+export type DoctorBookingsFilter = {
+  period?: DoctorBookingPeriod;
+  day?: string;
+  week?: string;
+  month?: string;
+  status?: AppointmentStatus | "ALL";
+  patientQuery?: string;
+};
+
+export type DoctorBookingListRow = {
+  id: string;
+  patientUserId: string;
+  patientName: string;
+  patientEmail: string;
+  status: AppointmentStatus;
+  cancelReason: string | null;
+  startsAt: Date;
+  endsAt: Date;
+};
+
+export type SessionChatMessage = {
+  id: string;
+  senderUserId: string;
+  senderName: string;
+  text: string;
+  createdAt: Date;
+};
+
+export type SessionReportRow = {
+  id: string;
+  title: string;
+  originalFileName: string;
+  createdAt: Date;
+};
 
 export type DoctorWorkspaceData = {
   counts: {
@@ -150,6 +231,100 @@ export function withTime(date: Date, hhmm: string) {
   return value;
 }
 
+function normalizeBookingStatus(value: string): AppointmentStatus {
+  if (
+    value === "BOOKED" ||
+    value === "CONFIRMED" ||
+    value === "COMPLETED" ||
+    value === "CANCELLED"
+  ) {
+    return value;
+  }
+  return "BOOKED";
+}
+
+function parseIsoDay(value: string | undefined) {
+  if (!value) return null;
+  const parsed = parseISO(`${value}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed;
+}
+
+function parseIsoWeek(value: string | undefined) {
+  if (!value) return null;
+  const match = /^(\d{4})-W(\d{2})$/.exec(value);
+  if (!match) return null;
+
+  const year = Number(match[1]);
+  const week = Number(match[2]);
+  if (!Number.isInteger(year) || !Number.isInteger(week)) return null;
+  if (week < 1 || week > 53) return null;
+
+  // ISO week: week containing Jan 4th is week 1, week starts Monday.
+  const jan4 = new Date(year, 0, 4);
+  const jan4Day = jan4.getDay() === 0 ? 7 : jan4.getDay();
+  const weekOneMonday = new Date(jan4);
+  weekOneMonday.setDate(jan4.getDate() - jan4Day + 1);
+  weekOneMonday.setHours(0, 0, 0, 0);
+  weekOneMonday.setDate(weekOneMonday.getDate() + (week - 1) * 7);
+  return weekOneMonday;
+}
+
+function parseIsoMonth(value: string | undefined) {
+  if (!value) return null;
+  const match = /^(\d{4})-(\d{2})$/.exec(value);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  if (!Number.isInteger(year) || !Number.isInteger(month)) return null;
+  if (month < 1 || month > 12) return null;
+
+  const parsed = new Date(year, month - 1, 1);
+  parsed.setHours(0, 0, 0, 0);
+  return parsed;
+}
+
+function resolveDoctorBookingsRange(filter: DoctorBookingsFilter) {
+  const period = filter.period ?? "THIS_MONTH";
+  const now = new Date();
+
+  if (period === "ALL") return null;
+  if (period === "TODAY") {
+    return { start: startOfDay(now), end: endOfDay(now) };
+  }
+  if (period === "THIS_WEEK") {
+    return {
+      start: startOfWeek(now, { weekStartsOn: 1 }),
+      end: endOfWeek(now, { weekStartsOn: 1 }),
+    };
+  }
+  if (period === "THIS_MONTH") {
+    return { start: startOfMonth(now), end: endOfMonth(now) };
+  }
+  if (period === "SPECIFIC_DAY") {
+    const parsed = parseIsoDay(filter.day);
+    return parsed
+      ? { start: startOfDay(parsed), end: endOfDay(parsed) }
+      : { start: startOfDay(now), end: endOfDay(now) };
+  }
+  if (period === "SPECIFIC_WEEK") {
+    const parsed = parseIsoWeek(filter.week);
+    if (!parsed) {
+      return {
+        start: startOfWeek(now, { weekStartsOn: 1 }),
+        end: endOfWeek(now, { weekStartsOn: 1 }),
+      };
+    }
+    return {
+      start: startOfWeek(parsed, { weekStartsOn: 1 }),
+      end: endOfWeek(parsed, { weekStartsOn: 1 }),
+    };
+  }
+  const parsedMonth = parseIsoMonth(filter.month);
+  const start = parsedMonth ?? startOfMonth(now);
+  return { start: startOfMonth(start), end: endOfMonth(start) };
+}
+
 export async function requireDoctor(currentUser: AuthenticatedUser) {
   if (currentUser.role !== "DOCTOR") {
     throw new Error("Only doctors can access this workspace.");
@@ -248,6 +423,65 @@ async function getOrCreateDoctorPatientRoom(
   });
 
   return roomId;
+}
+
+async function getOrCreateAppointmentSessionRoom(
+  appointmentId: string,
+  doctorUserId: string,
+  patientUserId: string,
+) {
+  const [existingRoom] = await db
+    .select({
+      id: chatRooms.id,
+      doctorUserId: chatRooms.doctorUserId,
+      patientUserId: chatRooms.patientUserId,
+      type: chatRooms.type,
+    })
+    .from(chatRooms)
+    .where(eq(chatRooms.id, appointmentId))
+    .limit(1);
+
+  if (existingRoom) {
+    if (
+      existingRoom.type !== SESSION_ROOM_TYPE ||
+      existingRoom.doctorUserId !== doctorUserId ||
+      existingRoom.patientUserId !== patientUserId
+    ) {
+      throw new Error("Invalid existing session room.");
+    }
+    return existingRoom.id;
+  }
+
+  const now = new Date();
+  await db.transaction(async (tx) => {
+    await tx.insert(chatRooms).values({
+      id: appointmentId,
+      doctorUserId,
+      type: SESSION_ROOM_TYPE,
+      patientUserId,
+      createdAt: now,
+      lastMessageAt: null,
+    });
+
+    await tx.insert(chatParticipants).values([
+      {
+        id: crypto.randomUUID(),
+        roomId: appointmentId,
+        userId: doctorUserId,
+        role: "DOCTOR",
+        joinedAt: now,
+      },
+      {
+        id: crypto.randomUUID(),
+        roomId: appointmentId,
+        userId: patientUserId,
+        role: "PATIENT",
+        joinedAt: now,
+      },
+    ]);
+  });
+
+  return appointmentId;
 }
 
 async function syncDoctorRoomsFromBookedAppointments(doctorUserId: string) {
@@ -353,6 +587,7 @@ export async function getDoctorWorkspaceData(
   const doctorUserId = await requireDoctor(currentUser);
   await syncDoctorRoomsFromBookedAppointments(doctorUserId);
   const now = new Date();
+  const todayStart = startOfDay(now);
   const maxDate = addMinutes(now, 60 * 24 * CALENDAR_SLOT_WINDOW_DAYS);
 
   const [patients, staffMembers, ruleRows, exceptionRows, slots, appts, rooms, reports, outgoing, incoming, doctors, counts] =
@@ -400,7 +635,12 @@ export async function getDoctorWorkspaceData(
           reason: scheduleExceptions.reason,
         })
         .from(scheduleExceptions)
-        .where(eq(scheduleExceptions.doctorUserId, doctorUserId))
+        .where(
+          and(
+            eq(scheduleExceptions.doctorUserId, doctorUserId),
+            gte(scheduleExceptions.date, todayStart),
+          ),
+        )
         .orderBy(desc(scheduleExceptions.date))
         .limit(30),
       db
@@ -1135,18 +1375,7 @@ export async function updateAppointmentStatus(
   },
 ) {
   const doctorUserId = await requireDoctor(currentUser);
-  const [record] = await db
-    .select({
-      id: appointments.id,
-      doctorUserId: appointments.doctorUserId,
-    })
-    .from(appointments)
-    .where(eq(appointments.id, input.appointmentId))
-    .limit(1);
-
-  if (!record || record.doctorUserId !== doctorUserId) {
-    throw new Error("Appointment not found in this doctor tenant.");
-  }
+  const record = await getAppointmentForDoctor(doctorUserId, input.appointmentId);
 
   await db
     .update(appointments)
@@ -1159,6 +1388,477 @@ export async function updateAppointmentStatus(
           : null,
     })
     .where(eq(appointments.id, input.appointmentId));
+
+  if (input.status === "CONFIRMED") {
+    await sendMailSafely("send appointment confirmed email to patient", () =>
+      sendAppointmentConfirmedEmailToPatient({
+        appointmentId: record.id,
+        startsAt: record.startsAt,
+        endsAt: record.endsAt,
+        doctorName: currentUser.name,
+        patientName: record.patientName,
+        patientEmail: record.patientEmail,
+      }),
+    );
+  }
+}
+
+export async function getDoctorBookingsList(
+  currentUser: AuthenticatedUser,
+  filter: DoctorBookingsFilter = {},
+): Promise<DoctorBookingListRow[]> {
+  const doctorUserId = await requireDoctor(currentUser);
+  const range = resolveDoctorBookingsRange(filter);
+  const patientQuery = filter.patientQuery?.trim();
+  const whereClauses = [eq(appointments.doctorUserId, doctorUserId)];
+
+  // Keep the default list focused on actionable sessions.
+  // Past sessions are shown only when the doctor explicitly searches a patient.
+  if (!patientQuery) {
+    whereClauses.push(gte(appointmentSlots.endsAt, new Date()));
+  }
+
+  if (range) {
+    whereClauses.push(gte(appointmentSlots.startsAt, range.start));
+    whereClauses.push(lte(appointmentSlots.startsAt, range.end));
+  }
+
+  if (
+    filter.status &&
+    filter.status !== "ALL" &&
+    (filter.status === "BOOKED" ||
+      filter.status === "CONFIRMED" ||
+      filter.status === "COMPLETED" ||
+      filter.status === "CANCELLED")
+  ) {
+    whereClauses.push(eq(appointments.status, filter.status));
+  }
+
+  if (patientQuery) {
+    whereClauses.push(
+      or(
+        like(user.name, `%${patientQuery}%`),
+        like(user.email, `%${patientQuery}%`),
+      )!,
+    );
+  }
+
+  const rows = await db
+    .select({
+      id: appointments.id,
+      patientUserId: appointments.patientUserId,
+      patientName: user.name,
+      patientEmail: user.email,
+      status: appointments.status,
+      cancelReason: appointments.cancelReason,
+      startsAt: appointmentSlots.startsAt,
+      endsAt: appointmentSlots.endsAt,
+    })
+    .from(appointments)
+    .innerJoin(appointmentSlots, eq(appointments.slotId, appointmentSlots.id))
+    .innerJoin(user, eq(appointments.patientUserId, user.id))
+    .where(and(...whereClauses))
+    .orderBy(desc(appointmentSlots.startsAt))
+    .limit(400);
+
+  return rows.map((row) => ({
+    ...row,
+    status: normalizeBookingStatus(row.status),
+  }));
+}
+
+type SessionAppointmentRow = {
+  id: string;
+  doctorUserId: string;
+  patientUserId: string;
+  status: AppointmentStatus;
+  cancelReason: string | null;
+  startsAt: Date;
+  endsAt: Date;
+  createdAt: Date;
+};
+
+async function getAppointmentForDoctor(
+  doctorUserId: string,
+  appointmentId: string,
+): Promise<
+  SessionAppointmentRow & {
+    patientName: string;
+    patientEmail: string;
+    patientPhone: string | null;
+  }
+> {
+  const [row] = await db
+    .select({
+      id: appointments.id,
+      doctorUserId: appointments.doctorUserId,
+      patientUserId: appointments.patientUserId,
+      status: appointments.status,
+      cancelReason: appointments.cancelReason,
+      startsAt: appointmentSlots.startsAt,
+      endsAt: appointmentSlots.endsAt,
+      createdAt: appointments.createdAt,
+      patientName: user.name,
+      patientEmail: user.email,
+      patientPhone: user.phone,
+    })
+    .from(appointments)
+    .innerJoin(appointmentSlots, eq(appointments.slotId, appointmentSlots.id))
+    .innerJoin(user, eq(appointments.patientUserId, user.id))
+    .where(eq(appointments.id, appointmentId))
+    .limit(1);
+
+  if (!row || row.doctorUserId !== doctorUserId) {
+    throw new Error("Session not found in this doctor tenant.");
+  }
+
+  return {
+    ...row,
+    status: normalizeBookingStatus(row.status),
+  };
+}
+
+async function getAppointmentForPatient(
+  patientUserId: string,
+  appointmentId: string,
+): Promise<
+  SessionAppointmentRow & {
+    doctorName: string;
+    doctorEmail: string;
+    doctorPhone: string | null;
+  }
+> {
+  const [row] = await db
+    .select({
+      id: appointments.id,
+      doctorUserId: appointments.doctorUserId,
+      patientUserId: appointments.patientUserId,
+      status: appointments.status,
+      cancelReason: appointments.cancelReason,
+      startsAt: appointmentSlots.startsAt,
+      endsAt: appointmentSlots.endsAt,
+      createdAt: appointments.createdAt,
+      doctorName: user.name,
+      doctorEmail: user.email,
+      doctorPhone: user.phone,
+    })
+    .from(appointments)
+    .innerJoin(appointmentSlots, eq(appointments.slotId, appointmentSlots.id))
+    .innerJoin(user, eq(appointments.doctorUserId, user.id))
+    .where(eq(appointments.id, appointmentId))
+    .limit(1);
+
+  if (!row || row.patientUserId !== patientUserId) {
+    throw new Error("Session not found for this patient.");
+  }
+
+  return {
+    ...row,
+    status: normalizeBookingStatus(row.status),
+  };
+}
+
+async function getSessionMessages(roomId: string): Promise<SessionChatMessage[]> {
+  return db
+    .select({
+      id: chatMessages.id,
+      senderUserId: chatMessages.senderUserId,
+      senderName: user.name,
+      text: chatMessages.text,
+      createdAt: chatMessages.createdAt,
+    })
+    .from(chatMessages)
+    .innerJoin(user, eq(chatMessages.senderUserId, user.id))
+    .where(eq(chatMessages.roomId, roomId))
+    .orderBy(asc(chatMessages.createdAt))
+    .limit(300);
+}
+
+async function getFallbackBookingMessage(
+  doctorUserId: string,
+  patientUserId: string,
+  startsAt: Date,
+) {
+  const [legacyRoom] = await db
+    .select({ id: chatRooms.id })
+    .from(chatRooms)
+    .where(
+      and(
+        eq(chatRooms.doctorUserId, doctorUserId),
+        eq(chatRooms.patientUserId, patientUserId),
+        eq(chatRooms.type, "PATIENT_DOCTOR"),
+      ),
+    )
+    .limit(1);
+
+  if (!legacyRoom) return null;
+
+  const [legacyMessage] = await db
+    .select({ text: chatMessages.text })
+    .from(chatMessages)
+    .where(
+      and(
+        eq(chatMessages.roomId, legacyRoom.id),
+        eq(chatMessages.senderUserId, patientUserId),
+        lte(chatMessages.createdAt, startsAt),
+      ),
+    )
+    .orderBy(desc(chatMessages.createdAt))
+    .limit(1);
+
+  return legacyMessage?.text ?? null;
+}
+
+async function resolveBookingMessage(
+  messages: SessionChatMessage[],
+  appointment: SessionAppointmentRow,
+) {
+  const fromPatient = messages.find(
+    (message) => message.senderUserId === appointment.patientUserId,
+  )?.text;
+  if (fromPatient) return fromPatient;
+
+  return getFallbackBookingMessage(
+    appointment.doctorUserId,
+    appointment.patientUserId,
+    appointment.startsAt,
+  );
+}
+
+export type DoctorSessionWorkspaceData = {
+  appointment: {
+    id: string;
+    status: AppointmentStatus;
+    cancelReason: string | null;
+    startsAt: Date;
+    endsAt: Date;
+  };
+  patient: {
+    userId: string;
+    name: string;
+    email: string;
+    phone: string | null;
+  };
+  bookingMessage: string | null;
+  messages: SessionChatMessage[];
+  reports: SessionReportRow[];
+};
+
+export async function getDoctorSessionWorkspaceData(
+  currentUser: AuthenticatedUser,
+  appointmentId: string,
+): Promise<DoctorSessionWorkspaceData> {
+  const doctorUserId = await requireDoctor(currentUser);
+  const appointment = await getAppointmentForDoctor(doctorUserId, appointmentId);
+  const roomId = await getOrCreateAppointmentSessionRoom(
+    appointment.id,
+    appointment.doctorUserId,
+    appointment.patientUserId,
+  );
+
+  const [messages, reports] = await Promise.all([
+    getSessionMessages(roomId),
+    db
+      .select({
+        id: documents.id,
+        title: documents.title,
+        originalFileName: documents.originalFileName,
+        createdAt: documents.createdAt,
+      })
+      .from(documents)
+      .where(
+        and(
+          eq(documents.ownerDoctorUserId, doctorUserId),
+          eq(documents.appointmentId, appointment.id),
+        ),
+      )
+      .orderBy(desc(documents.createdAt))
+      .limit(120),
+  ]);
+
+  return {
+    appointment: {
+      id: appointment.id,
+      status: normalizeBookingStatus(appointment.status),
+      cancelReason: appointment.cancelReason,
+      startsAt: appointment.startsAt,
+      endsAt: appointment.endsAt,
+    },
+    patient: {
+      userId: appointment.patientUserId,
+      name: appointment.patientName,
+      email: appointment.patientEmail,
+      phone: appointment.patientPhone,
+    },
+    bookingMessage: await resolveBookingMessage(messages, appointment),
+    messages,
+    reports,
+  };
+}
+
+export type PatientSessionWorkspaceData = {
+  appointment: {
+    id: string;
+    status: AppointmentStatus;
+    cancelReason: string | null;
+    startsAt: Date;
+    endsAt: Date;
+  };
+  doctor: {
+    userId: string;
+    name: string;
+    email: string;
+    phone: string | null;
+  };
+  bookingMessage: string | null;
+  messages: SessionChatMessage[];
+  reports: SessionReportRow[];
+};
+
+export async function getPatientSessionWorkspaceData(
+  currentUser: AuthenticatedUser,
+  appointmentId: string,
+): Promise<PatientSessionWorkspaceData> {
+  const patientUserId = await requirePatient(currentUser);
+  const appointment = await getAppointmentForPatient(patientUserId, appointmentId);
+  const roomId = await getOrCreateAppointmentSessionRoom(
+    appointment.id,
+    appointment.doctorUserId,
+    appointment.patientUserId,
+  );
+
+  const [messages, reports] = await Promise.all([
+    getSessionMessages(roomId),
+    db
+      .select({
+        id: documents.id,
+        title: documents.title,
+        originalFileName: documents.originalFileName,
+        createdAt: documents.createdAt,
+      })
+      .from(documents)
+      .innerJoin(
+        documentAccess,
+        and(
+          eq(documentAccess.documentId, documents.id),
+          eq(documentAccess.userId, patientUserId),
+          eq(documentAccess.canRead, true),
+        ),
+      )
+      .where(eq(documents.appointmentId, appointment.id))
+      .orderBy(desc(documents.createdAt))
+      .limit(120),
+  ]);
+
+  return {
+    appointment: {
+      id: appointment.id,
+      status: normalizeBookingStatus(appointment.status),
+      cancelReason: appointment.cancelReason,
+      startsAt: appointment.startsAt,
+      endsAt: appointment.endsAt,
+    },
+    doctor: {
+      userId: appointment.doctorUserId,
+      name: appointment.doctorName,
+      email: appointment.doctorEmail,
+      phone: appointment.doctorPhone,
+    },
+    bookingMessage: await resolveBookingMessage(messages, appointment),
+    messages,
+    reports,
+  };
+}
+
+export async function sendDoctorSessionMessage(
+  currentUser: AuthenticatedUser,
+  input: { appointmentId: string; text: string },
+) {
+  const doctorUserId = await requireDoctor(currentUser);
+  const appointment = await getAppointmentForDoctor(doctorUserId, input.appointmentId);
+  const text = input.text.trim();
+  if (!text) throw new Error("Message text is required.");
+
+  const roomId = await getOrCreateAppointmentSessionRoom(
+    appointment.id,
+    appointment.doctorUserId,
+    appointment.patientUserId,
+  );
+  const now = new Date();
+
+  await db.transaction(async (tx) => {
+    await tx.insert(chatMessages).values({
+      id: crypto.randomUUID(),
+      roomId,
+      senderUserId: doctorUserId,
+      text,
+      createdAt: now,
+      clientTimestamp: Date.now(),
+      deliveryStatus: "SENT",
+    });
+
+    await tx
+      .update(chatRooms)
+      .set({ lastMessageAt: now })
+      .where(eq(chatRooms.id, roomId));
+  });
+}
+
+export async function sendPatientSessionMessage(
+  currentUser: AuthenticatedUser,
+  input: { appointmentId: string; text: string },
+) {
+  const patientUserId = await requirePatient(currentUser);
+  const appointment = await getAppointmentForPatient(patientUserId, input.appointmentId);
+  const text = input.text.trim();
+  if (!text) throw new Error("Message text is required.");
+
+  const roomId = await getOrCreateAppointmentSessionRoom(
+    appointment.id,
+    appointment.doctorUserId,
+    appointment.patientUserId,
+  );
+  const now = new Date();
+
+  await db.transaction(async (tx) => {
+    await tx.insert(chatMessages).values({
+      id: crypto.randomUUID(),
+      roomId,
+      senderUserId: patientUserId,
+      text,
+      createdAt: now,
+      clientTimestamp: Date.now(),
+      deliveryStatus: "SENT",
+    });
+
+    await tx
+      .update(chatRooms)
+      .set({ lastMessageAt: now })
+      .where(eq(chatRooms.id, roomId));
+  });
+}
+
+export async function uploadSessionReport(
+  currentUser: AuthenticatedUser,
+  input: {
+    appointmentId: string;
+    title: string;
+    fileName: string;
+    mimeType: string;
+    fileBuffer: Buffer;
+  },
+) {
+  const doctorUserId = await requireDoctor(currentUser);
+  const appointment = await getAppointmentForDoctor(doctorUserId, input.appointmentId);
+
+  return uploadEncryptedReport(currentUser, {
+    patientUserId: appointment.patientUserId,
+    title: input.title,
+    fileName: input.fileName,
+    mimeType: input.mimeType,
+    fileBuffer: input.fileBuffer,
+    appointmentId: appointment.id,
+  });
 }
 
 export async function createDoctorPatientRoom(
@@ -1495,6 +2195,7 @@ export async function bookPatientAppointmentSlot(
       slotId: appointmentSlots.id,
       doctorUserId: appointmentSlots.doctorUserId,
       startsAt: appointmentSlots.startsAt,
+      endsAt: appointmentSlots.endsAt,
       status: appointmentSlots.status,
     })
     .from(appointmentSlots)
@@ -1527,6 +2228,8 @@ export async function bookPatientAppointmentSlot(
   ) {
     throw new Error("You are not allowed to book with this doctor.");
   }
+
+  const appointmentId = crypto.randomUUID();
 
   try {
     await db.transaction(async (tx) => {
@@ -1570,7 +2273,7 @@ export async function bookPatientAppointmentSlot(
       }
 
       await tx.insert(appointments).values({
-        id: crypto.randomUUID(),
+        id: appointmentId,
         slotId: slot.slotId,
         doctorUserId: slot.doctorUserId,
         patientUserId,
@@ -1587,13 +2290,95 @@ export async function bookPatientAppointmentSlot(
     throw new Error("Slot booking failed. It may already be booked.");
   }
 
-  const roomId = await getOrCreateDoctorPatientRoom(slot.doctorUserId, patientUserId);
+  const roomId = await getOrCreateAppointmentSessionRoom(
+    appointmentId,
+    slot.doctorUserId,
+    patientUserId,
+  );
   const bookingMessage = input.bookingMessage?.trim();
   if (bookingMessage) {
-    await sendPatientChatMessage(currentUser, {
-      roomId,
-      text: bookingMessage.slice(0, 4000),
+    const now = new Date();
+    await db.transaction(async (tx) => {
+      await tx.insert(chatMessages).values({
+        id: crypto.randomUUID(),
+        roomId,
+        senderUserId: patientUserId,
+        text: bookingMessage.slice(0, 4000),
+        createdAt: now,
+        clientTimestamp: Date.now(),
+        deliveryStatus: "SENT",
+      });
+
+      await tx
+        .update(chatRooms)
+        .set({ lastMessageAt: now })
+        .where(eq(chatRooms.id, roomId));
     });
+  }
+
+  const [doctorRow] = await db
+    .select({
+      name: user.name,
+      email: user.email,
+    })
+    .from(user)
+    .where(eq(user.id, slot.doctorUserId))
+    .limit(1);
+
+  const staffRows = await db
+    .select({
+      staffName: user.name,
+      staffEmail: user.email,
+    })
+    .from(doctorStaff)
+    .innerJoin(user, eq(doctorStaff.staffUserId, user.id))
+    .where(
+      and(
+        eq(doctorStaff.doctorUserId, slot.doctorUserId),
+        eq(doctorStaff.isActive, true),
+      ),
+    );
+
+  const doctorName = doctorRow?.name ?? "Doctor";
+
+  await sendMailSafely("send appointment booked email to patient", () =>
+    sendAppointmentBookedToPatientEmail({
+      appointmentId,
+      startsAt: slot.startsAt,
+      endsAt: slot.endsAt,
+      doctorName,
+      patientName: currentUser.name,
+      patientEmail: currentUser.email,
+    }),
+  );
+
+  if (doctorRow?.email) {
+    await sendMailSafely("send appointment booked email to doctor", () =>
+      sendAppointmentBookedToDoctorEmail({
+        appointmentId,
+        startsAt: slot.startsAt,
+        endsAt: slot.endsAt,
+        doctorName,
+        doctorEmail: doctorRow.email,
+        patientName: currentUser.name,
+      }),
+    );
+  }
+
+  for (const staff of staffRows) {
+    await sendMailSafely(
+      `send appointment booked email to staff ${staff.staffEmail}`,
+      () =>
+        sendAppointmentBookedToStaffEmail({
+          appointmentId,
+          startsAt: slot.startsAt,
+          endsAt: slot.endsAt,
+          doctorName,
+          patientName: currentUser.name,
+          staffEmail: staff.staffEmail,
+          staffName: staff.staffName,
+        }),
+    );
   }
 }
 
@@ -1616,7 +2401,12 @@ export async function uploadEncryptedReport(
   await ensureLinkedPatient(doctorUserId, input.patientUserId);
 
   const [patientRow] = await db
-    .select({ id: user.id, role: user.role })
+    .select({
+      id: user.id,
+      role: user.role,
+      name: user.name,
+      email: user.email,
+    })
     .from(user)
     .where(eq(user.id, input.patientUserId))
     .limit(1);
@@ -1709,6 +2499,16 @@ export async function uploadEncryptedReport(
     ]);
   });
 
+  await sendMailSafely("send report uploaded email to patient", () =>
+    sendReportUploadedEmailToPatient({
+      patientEmail: patientRow.email,
+      patientName: patientRow.name,
+      doctorName: currentUser.name,
+      reportTitle: title,
+      appointmentId: input.appointmentId ?? null,
+    }),
+  );
+
   return documentId;
 }
 
@@ -1726,6 +2526,7 @@ export async function requestDocumentShare(
       id: documents.id,
       patientUserId: documents.patientUserId,
       ownerDoctorUserId: documents.ownerDoctorUserId,
+      title: documents.title,
     })
     .from(documents)
     .where(eq(documents.id, input.documentId))
@@ -1736,7 +2537,7 @@ export async function requestDocumentShare(
   }
 
   const [targetDoctor] = await db
-    .select({ id: user.id, role: user.role })
+    .select({ id: user.id, role: user.role, email: user.email, name: user.name })
     .from(user)
     .where(eq(user.id, input.toDoctorUserId))
     .limit(1);
@@ -1765,6 +2566,15 @@ export async function requestDocumentShare(
         respondedAt: null,
       },
     });
+
+  await sendMailSafely("send report share request email to target doctor", () =>
+    sendReportShareRequestEmailToDoctor({
+      targetDoctorEmail: targetDoctor.email,
+      targetDoctorName: targetDoctor.name,
+      fromDoctorName: currentUser.name,
+      documentTitle: doc.title,
+    }),
+  );
 }
 
 export async function respondToIncomingShare(

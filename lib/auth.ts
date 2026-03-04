@@ -1,7 +1,12 @@
 // lib/auth.ts
 import { db } from "@/db";
 import { userKeys } from "@/drizzle/crypto";
-import { sendAuthOtpEmail } from "@/lib/mailer";
+import {
+  sendAuthOtpEmail,
+  sendLoginAlertEmail,
+  sendMailSafely,
+  sendSignupWelcomeEmail,
+} from "@/lib/mailer";
 import {
   patientProfile,
   staffProfile,
@@ -282,6 +287,23 @@ export const auth = betterAuth({
     }),
 
     after: createAuthMiddleware(async (ctx) => {
+      if (ctx.path.startsWith("/sign-in")) {
+        const contextRecord = asObjectRecord(ctx.context);
+        const newSession = asObjectRecord(contextRecord.newSession);
+        const signedInUser = asObjectRecord(newSession.user);
+        const email = asOptionalString(signedInUser.email);
+
+        if (email) {
+          await sendMailSafely("send login alert email", () =>
+            sendLoginAlertEmail({
+              email,
+              name: asOptionalString(signedInUser.name),
+            }),
+          );
+        }
+        return;
+      }
+
       // Runs after endpoint succeeded
       if (!ctx.path.startsWith("/sign-up")) return;
 
@@ -339,6 +361,17 @@ export const auth = betterAuth({
             bootstrapUserData({ id: userId, role, signature }),
             createInitialUserKey({ id: userId, signature }),
           ]);
+
+          const email = asOptionalString(createdUser.email);
+          if (email) {
+            await sendMailSafely("send signup welcome email", () =>
+              sendSignupWelcomeEmail({
+                email,
+                name: asOptionalString(createdUser.name),
+                role,
+              }),
+            );
+          }
         },
       },
     },

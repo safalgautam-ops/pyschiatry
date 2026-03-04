@@ -5,9 +5,7 @@ import Link from "next/link";
 import {
   IconCalendarEvent,
   IconClipboardCheck,
-  IconMessages,
   IconDashboard,
-  IconFileText,
   IconHelp,
   IconInnerShadowTop,
   IconSearch,
@@ -61,19 +59,14 @@ export function AppSidebar({
             icon: IconCalendarEvent,
           },
           {
-            title: "Bookings",
+            title: "Sessions",
             url: "/dashboard/doctor/bookings",
             icon: IconClipboardCheck,
           },
           {
-            title: "Chat",
-            url: "/dashboard/doctor/chat",
-            icon: IconMessages,
-          },
-          {
-            title: "Reports",
-            url: "/dashboard/doctor/reports",
-            icon: IconFileText,
+            title: "Manage Staff",
+            url: "/dashboard/doctor/staff",
+            icon: IconUser,
           },
         ]
       : user.role === "PATIENT"
@@ -87,11 +80,6 @@ export function AppSidebar({
               title: "Schedule",
               url: "/dashboard/patient/schedule",
               icon: IconCalendarEvent,
-            },
-            {
-              title: "Chat",
-              url: "/dashboard/patient/chat",
-              icon: IconMessages,
             },
           ]
       : [
@@ -137,7 +125,7 @@ export function AppSidebar({
               <Link href={primaryRoute}>
                 <IconInnerShadowTop className="!size-5" />
                 <span className="text-base font-semibold">Precious Physio</span>
-              </Link>
+              </Link> 
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>

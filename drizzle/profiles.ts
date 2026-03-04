@@ -59,8 +59,25 @@ export const staffProfile = mysqlTable(
 
     // generic “type”; doctor assignment happens in doctorStaff table
     staffRole: varchar("staff_role", { length: 16 }).notNull(), // ADMIN|RECEPTION
+    username: varchar("username", { length: 64 }),
+    jobTitle: varchar("job_title", { length: 128 }),
+    address: varchar("address", { length: 255 }),
+    notes: text("notes"),
+    mustChangePassword: boolean("must_change_password").default(false).notNull(),
+    profileCompleted: boolean("profile_completed").default(true).notNull(),
+    createdByDoctorUserId: varchar("created_by_doctor_user_id", { length: 36 }).references(
+      () => user.id,
+      { onDelete: "set null" },
+    ),
   },
-  (t) => [index("staff_profile_user_idx").on(t.userId)],
+  (t) => [
+    index("staff_profile_user_idx").on(t.userId),
+    uniqueIndex("staff_profile_username_unique").on(t.username),
+    index("staff_profile_onboarding_idx").on(
+      t.mustChangePassword,
+      t.profileCompleted,
+    ),
+  ],
 );
 
 /**

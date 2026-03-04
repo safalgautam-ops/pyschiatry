@@ -16,9 +16,12 @@ import {
   requestDocumentShare,
   respondToIncomingShare,
   sendDoctorChatMessage,
+  sendDoctorSessionMessage,
   sendPatientChatMessage,
+  sendPatientSessionMessage,
   setDoctorSlotStatus,
   updateAppointmentStatus,
+  uploadSessionReport,
   uploadEncryptedReport,
 } from "@/lib/dashboard/doctor-operations-service";
 import { revalidatePath } from "next/cache";
@@ -40,8 +43,8 @@ function revalidateDoctorPaths() {
   revalidatePath("/dashboard/doctor");
   revalidatePath("/dashboard/doctor/schedule");
   revalidatePath("/dashboard/doctor/bookings");
-  revalidatePath("/dashboard/doctor/chat");
-  revalidatePath("/dashboard/doctor/reports");
+  revalidatePath("/dashboard/doctor/bookings/[appointmentId]", "page");
+  revalidatePath("/dashboard/patient/schedule/[appointmentId]", "page");
 }
 
 function revalidateSchedulePaths() {
@@ -152,7 +155,6 @@ export async function bookPatientSlotAction(formData: FormData) {
   revalidatePath("/dashboard");
   revalidatePath("/dashboard/patient");
   revalidatePath("/dashboard/patient/schedule");
-  revalidatePath("/dashboard/patient/chat");
   revalidatePath("/dashboard/doctor");
   revalidatePath("/dashboard/doctor/schedule");
   revalidatePath("/dashboard/doctor/bookings");
@@ -193,7 +195,33 @@ export async function sendPatientMessageAction(formData: FormData) {
     roomId: asString(formData.get("roomId")),
     text: asString(formData.get("text")),
   });
-  revalidatePath("/dashboard/patient/chat");
+  revalidatePath("/dashboard/patient/schedule");
+}
+
+export async function sendDoctorSessionMessageAction(formData: FormData) {
+  const user = await requireAuthenticatedUser();
+  const appointmentId = asString(formData.get("appointmentId"));
+  await sendDoctorSessionMessage(user, {
+    appointmentId,
+    text: asString(formData.get("text")),
+  });
+  revalidateDoctorPaths();
+  revalidatePath(`/dashboard/doctor/bookings/${appointmentId}`);
+  revalidatePath(`/dashboard/patient/schedule/${appointmentId}`);
+}
+
+export async function sendPatientSessionMessageAction(formData: FormData) {
+  const user = await requireAuthenticatedUser();
+  const appointmentId = asString(formData.get("appointmentId"));
+  await sendPatientSessionMessage(user, {
+    appointmentId,
+    text: asString(formData.get("text")),
+  });
+  revalidatePath("/dashboard");
+  revalidatePath("/dashboard/patient/schedule");
+  revalidatePath(`/dashboard/patient/schedule/${appointmentId}`);
+  revalidatePath(`/dashboard/doctor/bookings/${appointmentId}`);
+  revalidatePath("/dashboard/doctor/bookings");
 }
 
 export async function uploadReportAction(formData: FormData) {
@@ -213,6 +241,62 @@ export async function uploadReportAction(formData: FormData) {
     appointmentId: asString(formData.get("appointmentId")) || null,
   });
   revalidateDoctorPaths();
+}
+
+export async function uploadSessionReportAction(formData: FormData) {
+  const user = await requireAuthenticatedUser();
+  const appointmentId = asString(formData.get("appointmentId"));
+  const titleFromSingle = asString(formData.get("title")).trim();
+
+  const rawTitlesJson = asString(formData.get("titlesJson"));
+  let parsedTitles: string[] = [];
+  if (rawTitlesJson) {
+    try {
+      const value = JSON.parse(rawTitlesJson);
+      if (Array.isArray(value)) {
+        parsedTitles = value.map((item) =>
+          typeof item === "string" ? item.trim() : "",
+        );
+      }
+    } catch {
+      parsedTitles = [];
+    }
+  }
+
+  const filesFromMulti = formData
+    .getAll("files")
+    .filter((value): value is File => value instanceof File && value.size > 0);
+
+  const singleFileValue = formData.get("file");
+  const files =
+    filesFromMulti.length > 0
+      ? filesFromMulti
+      : singleFileValue instanceof File && singleFileValue.size > 0
+        ? [singleFileValue]
+        : [];
+
+  if (files.length === 0) {
+    throw new Error("Report file is required.");
+  }
+
+  for (const [index, file] of files.entries()) {
+    const bytes = Buffer.from(await file.arrayBuffer());
+    const fallbackTitle = file.name.replace(/\.[^/.]+$/, "") || file.name;
+    const resolvedTitle =
+      parsedTitles[index] || titleFromSingle || fallbackTitle;
+
+    await uploadSessionReport(user, {
+      appointmentId,
+      title: resolvedTitle,
+      fileName: file.name,
+      mimeType: file.type,
+      fileBuffer: bytes,
+    });
+  }
+
+  revalidateDoctorPaths();
+  revalidatePath(`/dashboard/doctor/bookings/${appointmentId}`);
+  revalidatePath(`/dashboard/patient/schedule/${appointmentId}`);
 }
 
 export async function shareReportAction(formData: FormData) {

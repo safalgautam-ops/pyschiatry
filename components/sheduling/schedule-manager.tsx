@@ -1,10 +1,10 @@
 import {
   applyNepalWeeklyScheduleAction,
   createScheduleExceptionAction,
-  deleteScheduleExceptionAction,
   generateSlotsAction,
 } from "@/lib/actions/doctor-operations-actions";
 import { addDays, format } from "date-fns";
+import Link from "next/link";
 import { DoctorScheduleCalendar } from "@/components/sheduling/doctor-schedule-calendar";
 import type { PatientScheduleData } from "@/lib/dashboard/doctor-operations-service";
 import type { CalendarEvent } from "@/components/sheduling/types";
@@ -147,10 +147,6 @@ export function DoctorScheduleManager({
     ]),
   );
 
-  const holidayExceptions = data.scheduleExceptions
-    .filter((item) => item.type === "OFF")
-    .slice(0, 20);
-
   return (
     <div className="space-y-4">
       <Frame className="grid gap-1 xl:grid-cols-[360px_1fr]">
@@ -211,7 +207,7 @@ export function DoctorScheduleManager({
           </div>
         </FramePanel>
 
-        <FramePanel className="overflow-hidden p-0">
+        <FramePanel className="overflow-hidden p-0 m-0! h-full">
           <div className="border-b px-5 py-4">
             <FrameTitle>Doctor Schedule Calendar</FrameTitle>
             <FrameDescription>
@@ -228,54 +224,6 @@ export function DoctorScheduleManager({
           />
         </FramePanel>
       </Frame>
-
-      <section className="space-y-2">
-        <h2 className="font-cormorant text-2xl leading-none">Holiday Exceptions</h2>
-        <p className="font-at-aero-regular text-muted-foreground text-sm">
-          Includes national or sudden closures added by the doctor team.
-        </p>
-        <Frame className="w-full">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Date</TableHead>
-                <TableHead>Reason</TableHead>
-                <TableHead className="text-right">Action</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {holidayExceptions.map((item) => (
-                <TableRow key={item.id}>
-                  <TableCell>{formatDateTime(item.date)}</TableCell>
-                  <TableCell>{item.reason || "Holiday / OFF"}</TableCell>
-                  <TableCell className="text-right">
-                    <form action={deleteScheduleExceptionAction}>
-                      <input
-                        type="hidden"
-                        name="scheduleExceptionId"
-                        value={item.id}
-                      />
-                      <Button size="sm" type="submit" variant="outline">
-                        Remove
-                      </Button>
-                    </form>
-                  </TableCell>
-                </TableRow>
-              ))}
-              {holidayExceptions.length === 0 && (
-                <TableRow>
-                  <TableCell
-                    className="text-center text-muted-foreground"
-                    colSpan={3}
-                  >
-                    No holiday exceptions yet.
-                  </TableCell>
-                </TableRow>
-              )}
-            </TableBody>
-          </Table>
-        </Frame>
-      </section>
     </div>
   );
 }
@@ -287,32 +235,38 @@ export function PatientScheduleManager({
 }) {
   return (
     <section className="space-y-2">
-      <h2 className="font-cormorant text-2xl leading-none">My Bookings</h2>
-      <p className="font-at-aero-regular text-muted-foreground text-sm">
-        Recent appointments and their status.
-      </p>
       <Frame className="w-full">
         <Table>
           <TableHeader>
             <TableRow>
+              <TableHead>Session</TableHead>
               <TableHead>Doctor</TableHead>
               <TableHead>Start</TableHead>
               <TableHead>Status</TableHead>
+              <TableHead className="text-right">Open</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {data.bookedAppointments.map((booking) => (
               <TableRow key={booking.appointmentId}>
+                <TableCell className="font-mono text-xs">{booking.appointmentId}</TableCell>
                 <TableCell>{booking.doctorName}</TableCell>
                 <TableCell>{formatDateTime(booking.startsAt)}</TableCell>
                 <TableCell>
                   <Badge variant="outline">{booking.status}</Badge>
                 </TableCell>
+                <TableCell className="text-right">
+                  <Button asChild size="sm" variant="outline">
+                    <Link href={`/dashboard/patient/schedule/${booking.appointmentId}`}>
+                      Open Session
+                    </Link>
+                  </Button>
+                </TableCell>
               </TableRow>
             ))}
             {data.bookedAppointments.length === 0 && (
               <TableRow>
-                <TableCell className="text-center text-muted-foreground" colSpan={3}>
+                <TableCell className="text-center text-muted-foreground" colSpan={5}>
                   No bookings yet.
                 </TableCell>
               </TableRow>
