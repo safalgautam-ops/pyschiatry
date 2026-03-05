@@ -113,6 +113,7 @@ export default async function PatientSessionPage({
             </FrameDescription>
           </div>
           <div className="flex-1 space-y-3 overflow-y-auto p-5">
+            
             {data.messages.map((message) => {
               const mine = message.senderUserId === user.id;
               return (
@@ -184,7 +185,14 @@ export default async function PatientSessionPage({
             {data.reports.map((report) => (
               <TableRow key={report.id}>
                 <TableCell>{report.title}</TableCell>
-                <TableCell>{report.originalFileName}</TableCell>
+                <TableCell>
+                  <Link
+                    className="hover:underline"
+                    href={`/api/reports/${report.id}/download`}
+                  >
+                    {report.originalFileName}
+                  </Link>
+                </TableCell>
                 <TableCell>{formatDateTime(report.createdAt)}</TableCell>
               </TableRow>
             ))}

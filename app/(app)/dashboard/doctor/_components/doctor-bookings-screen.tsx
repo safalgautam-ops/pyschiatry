@@ -72,9 +72,6 @@ export async function DoctorBookingsScreen({
     <div className="@container/main flex flex-1 flex-col gap-4 p-4 md:p-6">
       <Frame className="w-full">
         <FramePanel className="space-y-4 p-5">
-          <FrameDescription>
-            Past sessions are hidden by default and shown when searching by patient.
-          </FrameDescription>
 
           <form className="grid gap-2 md:grid-cols-3 xl:grid-cols-6">
             <label className="grid gap-1 text-sm">

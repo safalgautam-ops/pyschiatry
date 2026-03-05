@@ -1,6 +1,8 @@
 import type { Connection } from "mysql2/promise";
 
-const ENABLED_BY_DEFAULT = process.env.NODE_ENV !== "production";
+// Runtime auto-seeding can block writes while transactions contend.
+// Keep this opt-in only. Use AUTO_SEED_DOCTORS=true when explicitly needed.
+const ENABLED_BY_DEFAULT = false;
 const AUTO_SEED = process.env.AUTO_SEED_DOCTORS;
 
 const SHOULD_SEED =

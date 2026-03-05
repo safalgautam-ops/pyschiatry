@@ -14,11 +14,13 @@ import {
   generateSlotsFromRules,
   markDoctorHolidayByDate,
   requestDocumentShare,
+  resolveReportAccessRecoveryRequest,
   respondToIncomingShare,
   sendDoctorChatMessage,
   sendDoctorSessionMessage,
   sendPatientChatMessage,
   sendPatientSessionMessage,
+  setStaffReportVisibility,
   setDoctorSlotStatus,
   updateAppointmentStatus,
   uploadSessionReport,
@@ -315,6 +317,26 @@ export async function respondShareAction(formData: FormData) {
   await respondToIncomingShare(user, {
     shareId: asString(formData.get("shareId")),
     decision: decision === "ACCEPTED" ? "ACCEPTED" : "REJECTED",
+  });
+  revalidateDoctorPaths();
+}
+
+export async function setStaffReportVisibilityAction(formData: FormData) {
+  const user = await requireAuthenticatedUser();
+  await setStaffReportVisibility(user, {
+    documentId: asString(formData.get("documentId")),
+    staffUserId: asString(formData.get("staffUserId")),
+    visible: asString(formData.get("visible")) === "true",
+  });
+  revalidateDoctorPaths();
+}
+
+export async function resolveReportRecoveryRequestAction(formData: FormData) {
+  const user = await requireAuthenticatedUser();
+  const decisionRaw = asString(formData.get("decision"));
+  await resolveReportAccessRecoveryRequest(user, {
+    requestId: asString(formData.get("requestId")),
+    decision: decisionRaw === "APPROVE" ? "APPROVE" : "REJECT",
   });
   revalidateDoctorPaths();
 }

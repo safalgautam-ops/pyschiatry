@@ -15,6 +15,13 @@
       "when": 1772604000000,
       "tag": "0001_staff_onboarding",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1772651170285,
+      "tag": "0002_sad_living_mummy",
+      "breakpoints": true
     }
   ]
 }

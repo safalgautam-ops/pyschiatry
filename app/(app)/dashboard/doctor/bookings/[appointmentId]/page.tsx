@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { requireAuthenticatedUser } from "@/lib/auth/session";
@@ -197,7 +198,14 @@ export default async function DoctorSessionPage({
             {data.reports.map((report) => (
               <TableRow key={report.id}>
                 <TableCell>{report.title}</TableCell>
-                <TableCell>{report.originalFileName}</TableCell>
+                <TableCell>
+                  <Link
+                    className="hover:underline"
+                    href={`/api/reports/${report.id}/download`}
+                  >
+                    {report.originalFileName}
+                  </Link>
+                </TableCell>
                 <TableCell>{formatDateTime(report.createdAt)}</TableCell>
               </TableRow>
             ))}

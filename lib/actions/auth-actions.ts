@@ -2,20 +2,119 @@
 
 import { auth } from "@/lib/auth";
 import { db } from "@/db";
-import { doctorPatients, user } from "@/drizzle";
+import { doctorPatients, user, userKeys } from "@/drizzle";
+import { createReportAccessRecoveryRequestsForPatient } from "@/lib/dashboard/doctor-operations-service";
 import {
   sendMailSafely,
   sendPasswordResetRequestedEmailToDoctor,
   sendPasswordResetRequestedEmailToUser,
   sendPasswordResetSuccessfulEmail,
 } from "@/lib/mailer";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
+import crypto from "node:crypto";
 
 function toErrorMessage(error: unknown) {
   if (error instanceof Error) return error.message;
   return "Unknown authentication error";
+}
+
+function getUserKeyEncryptionSecret() {
+  return (
+    process.env.USER_KEYS_ENCRYPTION_SECRET ??
+    process.env.BETTER_AUTH_SECRET ??
+    process.env.AUTH_SECRET ??
+    "development-only-user-key-secret"
+  );
+}
+
+function encryptPrivateKeyForStorage(privateKeyPem: string, signature: string) {
+  const encryptionSecret = getUserKeyEncryptionSecret();
+  const key = crypto
+    .createHash("sha256")
+    .update(`${encryptionSecret}:${signature}`)
+    .digest();
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const encrypted = Buffer.concat([
+    cipher.update(privateKeyPem, "utf8"),
+    cipher.final(),
+  ]);
+  const tag = cipher.getAuthTag();
+
+  return JSON.stringify({
+    version: 1,
+    algorithm: "aes-256-gcm",
+    iv: iv.toString("base64"),
+    tag: tag.toString("base64"),
+    ciphertext: encrypted.toString("base64"),
+  });
+}
+
+function fingerprintPublicKey(publicKeyPem: string) {
+  return crypto.createHash("sha256").update(publicKeyPem).digest("hex");
+}
+
+async function generateEd25519PemKeyPair() {
+  return await new Promise<{ publicKey: string; privateKey: string }>(
+    (resolve, reject) => {
+      crypto.generateKeyPair(
+        "ed25519",
+        {
+          publicKeyEncoding: { format: "pem", type: "spki" },
+          privateKeyEncoding: { format: "pem", type: "pkcs8" },
+        },
+        (error, publicKey, privateKey) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          resolve({ publicKey, privateKey });
+        },
+      );
+    },
+  );
+}
+
+async function rotateUserKeysAfterPasswordReset(input: {
+  userId: string;
+  signature: string;
+}) {
+  const [latestKey] = await db
+    .select({
+      keyVersion: userKeys.keyVersion,
+    })
+    .from(userKeys)
+    .where(eq(userKeys.userId, input.userId))
+    .orderBy(desc(userKeys.keyVersion))
+    .limit(1);
+
+  const nextKeyVersion = (latestKey?.keyVersion ?? 0) + 1;
+  const pair = await generateEd25519PemKeyPair();
+  const encryptedPrivateKey = encryptPrivateKeyForStorage(
+    pair.privateKey,
+    input.signature,
+  );
+  const keyFingerprint = fingerprintPublicKey(pair.publicKey);
+
+  await db.transaction(async (tx) => {
+    await tx
+      .update(userKeys)
+      .set({ isActive: false })
+      .where(eq(userKeys.userId, input.userId));
+
+    await tx.insert(userKeys).values({
+      id: crypto.randomUUID(),
+      userId: input.userId,
+      keyVersion: nextKeyVersion,
+      publicKey: pair.publicKey,
+      encryptedPrivateKey,
+      keyFingerprint,
+      signature: input.signature,
+      isActive: true,
+    });
+  });
 }
 
 export const signUp = async (email: string, password: string, name: string) => {
@@ -168,6 +267,9 @@ export const resetPasswordWithOtp = async (
 
     const [updatedUser] = await db
       .select({
+        id: user.id,
+        role: user.role,
+        signature: user.signature,
         email: user.email,
         name: user.name,
       })
@@ -182,6 +284,19 @@ export const resetPasswordWithOtp = async (
           name: updatedUser.name,
         }),
       );
+
+      try {
+        await rotateUserKeysAfterPasswordReset({
+          userId: updatedUser.id,
+          signature: updatedUser.signature,
+        });
+
+        if (updatedUser.role === "PATIENT") {
+          await createReportAccessRecoveryRequestsForPatient(updatedUser.id);
+        }
+      } catch (rekeyError) {
+        console.error("[auth] post-reset key rotation/recovery setup failed", rekeyError);
+      }
     }
 
     return { success: true };

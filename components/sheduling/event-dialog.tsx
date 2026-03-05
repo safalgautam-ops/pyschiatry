@@ -2,7 +2,7 @@
 
 import { RiCalendarLine, RiDeleteBinLine } from "@remixicon/react";
 import { format, isBefore } from "date-fns";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
 import type { CalendarEvent, EventColor } from "./types";
 import {
@@ -48,6 +48,12 @@ interface EventDialogProps {
   onDelete: (eventId: string) => void;
 }
 
+function formatTimeForInput(date: Date) {
+  const hours = date.getHours().toString().padStart(2, "0");
+  const minutes = Math.floor(date.getMinutes() / 15) * 15;
+  return `${hours}:${minutes.toString().padStart(2, "0")}`;
+}
+
 export function EventDialog({
   event,
   isOpen,
@@ -55,63 +61,49 @@ export function EventDialog({
   onSave,
   onDelete,
 }: EventDialogProps) {
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [startDate, setStartDate] = useState<Date>(new Date());
-  const [endDate, setEndDate] = useState<Date>(new Date());
-  const [startTime, setStartTime] = useState(`${DefaultStartHour}:00`);
-  const [endTime, setEndTime] = useState(`${DefaultEndHour}:00`);
-  const [allDay, setAllDay] = useState(false);
-  const [location, setLocation] = useState("");
-  const [color, setColor] = useState<EventColor>("sky");
+  const initialValues = useMemo(() => {
+    if (!event) {
+      const now = new Date();
+      return {
+        allDay: false,
+        color: "sky" as EventColor,
+        description: "",
+        endDate: now,
+        endTime: `${DefaultEndHour}:00`,
+        location: "",
+        startDate: now,
+        startTime: `${DefaultStartHour}:00`,
+        title: "",
+      };
+    }
+
+    const start = new Date(event.start);
+    const end = new Date(event.end);
+    return {
+      allDay: event.allDay || false,
+      color: (event.color as EventColor) || "sky",
+      description: event.description || "",
+      endDate: end,
+      endTime: formatTimeForInput(end),
+      location: event.location || "",
+      startDate: start,
+      startTime: formatTimeForInput(start),
+      title: event.title || "",
+    };
+  }, [event]);
+
+  const [title, setTitle] = useState(initialValues.title);
+  const [description, setDescription] = useState(initialValues.description);
+  const [startDate, setStartDate] = useState<Date>(initialValues.startDate);
+  const [endDate, setEndDate] = useState<Date>(initialValues.endDate);
+  const [startTime, setStartTime] = useState(initialValues.startTime);
+  const [endTime, setEndTime] = useState(initialValues.endTime);
+  const [allDay, setAllDay] = useState(initialValues.allDay);
+  const [location, setLocation] = useState(initialValues.location);
+  const [color, setColor] = useState<EventColor>(initialValues.color);
   const [error, setError] = useState<string | null>(null);
   const [startDateOpen, setStartDateOpen] = useState(false);
   const [endDateOpen, setEndDateOpen] = useState(false);
-
-  // Debug log to check what event is being passed
-  useEffect(() => {
-    console.log("EventDialog received event:", event);
-  }, [event]);
-
-  const resetForm = useCallback(() => {
-    setTitle("");
-    setDescription("");
-    setStartDate(new Date());
-    setEndDate(new Date());
-    setStartTime(`${DefaultStartHour}:00`);
-    setEndTime(`${DefaultEndHour}:00`);
-    setAllDay(false);
-    setLocation("");
-    setColor("sky");
-    setError(null);
-  }, []);
-
-  const formatTimeForInput = useCallback((date: Date) => {
-    const hours = date.getHours().toString().padStart(2, "0");
-    const minutes = Math.floor(date.getMinutes() / 15) * 15;
-    return `${hours}:${minutes.toString().padStart(2, "0")}`;
-  }, []);
-
-  useEffect(() => {
-    if (event) {
-      setTitle(event.title || "");
-      setDescription(event.description || "");
-
-      const start = new Date(event.start);
-      const end = new Date(event.end);
-
-      setStartDate(start);
-      setEndDate(end);
-      setStartTime(formatTimeForInput(start));
-      setEndTime(formatTimeForInput(end));
-      setAllDay(event.allDay || false);
-      setLocation(event.location || "");
-      setColor((event.color as EventColor) || "sky");
-      setError(null); // Reset error when opening dialog
-    } else {
-      resetForm();
-    }
-  }, [event, formatTimeForInput, resetForm]);
 
   // Memoize time options so they're only calculated once
   const timeOptions = useMemo(() => {

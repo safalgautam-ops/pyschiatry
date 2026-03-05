@@ -14,23 +14,23 @@ function isCalendarSystem(value: string | null): value is CalendarSystem {
 export function useCalendarSystemPreference(
   defaultValue: CalendarSystem = "gregorian",
 ) {
-  const [calendarSystem, setCalendarSystem] = useState<CalendarSystem>(defaultValue);
-  const [isHydrated, setIsHydrated] = useState(false);
-
-  useEffect(() => {
+  const [calendarSystem, setCalendarSystem] = useState<CalendarSystem>(() => {
+    if (typeof window === "undefined") {
+      return defaultValue;
+    }
     try {
       const stored = window.localStorage.getItem(CALENDAR_SYSTEM_KEY);
       if (isCalendarSystem(stored)) {
-        setCalendarSystem(stored);
+        return stored;
       }
     } catch {
       // ignore localStorage read errors
     }
-    setIsHydrated(true);
-  }, []);
+    return defaultValue;
+  });
 
   useEffect(() => {
-    if (!isHydrated) return;
+    if (typeof window === "undefined") return;
 
     try {
       window.localStorage.setItem(CALENDAR_SYSTEM_KEY, calendarSystem);
@@ -40,7 +40,7 @@ export function useCalendarSystemPreference(
     } catch {
       // ignore localStorage write errors
     }
-  }, [calendarSystem, isHydrated]);
+  }, [calendarSystem]);
 
   useEffect(() => {
     const onStorage = (event: StorageEvent) => {

@@ -17,7 +17,18 @@ import { headers } from "next/headers";
 import { revalidatePath } from "next/cache";
 
 function toErrorMessage(error: unknown) {
-  return error instanceof Error ? error.message : "Unexpected dashboard error.";
+  if (!(error instanceof Error)) {
+    return "Unexpected dashboard error.";
+  }
+
+  if (
+    error.message.includes("Unknown column") ||
+    error.message.includes("ER_BAD_FIELD_ERROR")
+  ) {
+    return "Database schema is outdated. Run `bun run db:migrate` and retry.";
+  }
+
+  return error.message;
 }
 
 export async function getDashboardSummaryAction() {

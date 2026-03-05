@@ -648,6 +648,7 @@ export function EventCalendar({
         </div>
 
         <EventDialog
+          key={`${isEventDialogOpen ? "open" : "closed"}-${selectedEvent?.id ?? "new"}-${selectedEvent ? new Date(selectedEvent.start).getTime() : "none"}`}
           event={selectedEvent}
           isOpen={isEventDialogOpen}
           onClose={() => {

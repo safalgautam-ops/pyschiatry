@@ -12,6 +12,8 @@ import {
   documentKeyrings,
   documents,
   documentShares,
+  reportAccessRequestItems,
+  reportAccessRequests,
   scheduleExceptions,
   scheduleRules,
   user,
@@ -32,9 +34,11 @@ import {
   asc,
   desc,
   eq,
+  gt,
   gte,
   inArray,
   like,
+  lt,
   lte,
   ne,
   or,
@@ -50,8 +54,14 @@ import {
   startOfWeek,
 } from "date-fns";
 import crypto from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import {
+  emitChatRealtimeAndBuffer,
+  getBufferedChatMessagesByRoomIds,
+  getBufferedChatMessagesForRoom,
+  maybeFlushBufferedChatMessages,
+} from "@/lib/chat-buffer";
 
 const ACTIVE_PATIENT_LINK_STATUSES = ["ACTIVE"] as const;
 const CHAT_ELIGIBLE_APPOINTMENT_STATUSES = [
@@ -207,6 +217,16 @@ function addMinutes(date: Date, minutes: number) {
   return new Date(date.getTime() + minutes * 60 * 1000);
 }
 
+function intervalsOverlap(
+  left: { startsAt: Date; endsAt: Date },
+  right: { startsAt: Date; endsAt: Date },
+) {
+  return (
+    left.startsAt.getTime() < right.endsAt.getTime() &&
+    left.endsAt.getTime() > right.startsAt.getTime()
+  );
+}
+
 export function parseTimeToMinutes(value: string) {
   const [hourPart, minutePart] = value.split(":");
   const hour = Number(hourPart);
@@ -229,6 +249,38 @@ export function withTime(date: Date, hhmm: string) {
   const value = new Date(date);
   value.setHours(Number(hourPart), Number(minutePart), 0, 0);
   return value;
+}
+
+function toSessionMessageFromBuffered(input: {
+  id: string;
+  senderUserId: string;
+  senderName: string;
+  text: string;
+  createdAt: Date;
+}): SessionChatMessage {
+  return {
+    id: input.id,
+    senderUserId: input.senderUserId,
+    senderName: input.senderName,
+    text: input.text,
+    createdAt: input.createdAt,
+  };
+}
+
+function mergeSessionMessages(
+  persisted: SessionChatMessage[],
+  buffered: SessionChatMessage[],
+) {
+  const byId = new Map<string, SessionChatMessage>();
+  for (const item of persisted) {
+    byId.set(item.id, item);
+  }
+  for (const item of buffered) {
+    byId.set(item.id, item);
+  }
+  return Array.from(byId.values()).sort(
+    (a, b) => a.createdAt.getTime() - b.createdAt.getTime(),
+  );
 }
 
 function normalizeBookingStatus(value: string): AppointmentStatus {
@@ -519,6 +571,25 @@ export async function getActiveUserKeyMeta(userId: string) {
   return row;
 }
 
+async function getLatestUserKeyring(documentId: string, userId: string) {
+  const [row] = await db
+    .select({
+      wrappedDek: documentKeyrings.wrappedDek,
+      userKeyVersion: documentKeyrings.userKeyVersion,
+    })
+    .from(documentKeyrings)
+    .where(
+      and(
+        eq(documentKeyrings.documentId, documentId),
+        eq(documentKeyrings.userId, userId),
+      ),
+    )
+    .orderBy(desc(documentKeyrings.userKeyVersion))
+    .limit(1);
+
+  return row ?? null;
+}
+
 function deriveWrapKey(input: {
   userId: string;
   keyVersion: number;
@@ -580,10 +651,57 @@ async function persistEncryptedFile(documentId: string, encryptedBytes: Buffer) 
   return path.join(relativeDir, fileName).replaceAll("\\", "/");
 }
 
+function resolveStoragePath(storageKey: string) {
+  const normalized = storageKey.replaceAll("\\", "/");
+  if (path.isAbsolute(normalized)) {
+    return normalized;
+  }
+  return path.join(process.cwd(), normalized);
+}
+
+async function readEncryptedFile(storageKey: string) {
+  return readFile(resolveStoragePath(storageKey));
+}
+
+async function writeEncryptedFile(storageKey: string, bytes: Buffer) {
+  await writeFile(resolveStoragePath(storageKey), bytes);
+}
+
+function decryptFileWithDek(input: {
+  encryptedBytes: Buffer;
+  dek: Buffer;
+  ivBase64: string;
+  tagBase64: string;
+}) {
+  const decipher = crypto.createDecipheriv(
+    "aes-256-gcm",
+    input.dek,
+    Buffer.from(input.ivBase64, "base64"),
+  );
+  decipher.setAuthTag(Buffer.from(input.tagBase64, "base64"));
+  return Buffer.concat([
+    decipher.update(input.encryptedBytes),
+    decipher.final(),
+  ]);
+}
+
+function encryptFileWithDek(plainBytes: Buffer, dek: Buffer) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", dek, iv);
+  const encrypted = Buffer.concat([cipher.update(plainBytes), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return {
+    encrypted,
+    ivBase64: iv.toString("base64"),
+    tagBase64: tag.toString("base64"),
+  };
+}
+
 export async function getDoctorWorkspaceData(
   currentUser: AuthenticatedUser,
   selectedRoomId?: string | null,
 ): Promise<DoctorWorkspaceData> {
+  await maybeFlushBufferedChatMessages();
   const doctorUserId = await requireDoctor(currentUser);
   await syncDoctorRoomsFromBookedAppointments(doctorUserId);
   const now = new Date();
@@ -812,7 +930,7 @@ export async function getDoctorWorkspaceData(
     .map((room) => room.patientUserId)
     .filter((value): value is string => Boolean(value));
 
-  const [roomMessages, roomPatients] = await Promise.all([
+  const [roomMessages, roomPatients, bufferedByRoom] = await Promise.all([
     roomIds.length > 0
       ? db
           .select({
@@ -830,12 +948,32 @@ export async function getDoctorWorkspaceData(
           .from(user)
           .where(inArray(user.id, roomPatientIds))
       : Promise.resolve([]),
+    getBufferedChatMessagesByRoomIds(roomIds),
   ]);
 
-  const latestMessageByRoomId = new Map<string, string>();
+  const latestMessageByRoomId = new Map<
+    string,
+    { text: string; createdAt: number }
+  >();
   for (const row of roomMessages) {
     if (latestMessageByRoomId.has(row.roomId)) continue;
-    latestMessageByRoomId.set(row.roomId, row.text);
+    latestMessageByRoomId.set(row.roomId, {
+      text: row.text,
+      createdAt: row.createdAt.getTime(),
+    });
+  }
+
+  for (const [roomId, bufferedMessages] of bufferedByRoom.entries()) {
+    const latestBuffered = bufferedMessages[bufferedMessages.length - 1];
+    if (!latestBuffered) continue;
+    const latestBufferedAt = latestBuffered.createdAt.getTime();
+    const existing = latestMessageByRoomId.get(roomId);
+    if (!existing || latestBufferedAt > existing.createdAt) {
+      latestMessageByRoomId.set(roomId, {
+        text: latestBuffered.text,
+        createdAt: latestBufferedAt,
+      });
+    }
   }
 
   const roomPatientNameById = new Map(
@@ -848,7 +986,7 @@ export async function getDoctorWorkspaceData(
     ? selectedRoomId
     : (scopedRooms[0]?.id ?? null);
 
-  const selectedRoomMessages =
+  const selectedRoomMessagesPersisted =
     activeRoomId !== null
       ? await db
           .select({
@@ -864,6 +1002,23 @@ export async function getDoctorWorkspaceData(
           .orderBy(asc(chatMessages.createdAt))
           .limit(80)
       : [];
+
+  const selectedRoomBuffered =
+    activeRoomId !== null
+      ? (bufferedByRoom.get(activeRoomId) ?? []).map((item) =>
+          toSessionMessageFromBuffered({
+            id: item.id,
+            senderUserId: item.senderUserId,
+            senderName: item.senderName,
+            text: item.text,
+            createdAt: item.createdAt,
+          }),
+        )
+      : [];
+  const selectedRoomMessages = mergeSessionMessages(
+    selectedRoomMessagesPersisted,
+    selectedRoomBuffered,
+  );
 
   const [patientsCountRow] = counts[0];
   const [openSlotsCountRow] = counts[1];
@@ -900,7 +1055,7 @@ export async function getDoctorWorkspaceData(
         : "No patient",
       type: room.type,
       lastMessageAt: room.lastMessageAt,
-      latestMessage: latestMessageByRoomId.get(room.id) ?? null,
+      latestMessage: latestMessageByRoomId.get(room.id)?.text ?? null,
     })),
     selectedRoomMessages,
     selectedRoomId: activeRoomId,
@@ -1559,7 +1714,7 @@ async function getAppointmentForPatient(
 }
 
 async function getSessionMessages(roomId: string): Promise<SessionChatMessage[]> {
-  return db
+  const persisted = await db
     .select({
       id: chatMessages.id,
       senderUserId: chatMessages.senderUserId,
@@ -1572,6 +1727,19 @@ async function getSessionMessages(roomId: string): Promise<SessionChatMessage[]>
     .where(eq(chatMessages.roomId, roomId))
     .orderBy(asc(chatMessages.createdAt))
     .limit(300);
+
+  const bufferedRaw = await getBufferedChatMessagesForRoom(roomId);
+  const buffered = bufferedRaw.map((item) =>
+    toSessionMessageFromBuffered({
+      id: item.id,
+      senderUserId: item.senderUserId,
+      senderName: item.senderName,
+      text: item.text,
+      createdAt: item.createdAt,
+    }),
+  );
+
+  return mergeSessionMessages(persisted, buffered);
 }
 
 async function getFallbackBookingMessage(
@@ -1648,6 +1816,7 @@ export async function getDoctorSessionWorkspaceData(
   currentUser: AuthenticatedUser,
   appointmentId: string,
 ): Promise<DoctorSessionWorkspaceData> {
+  await maybeFlushBufferedChatMessages();
   const doctorUserId = await requireDoctor(currentUser);
   const appointment = await getAppointmentForDoctor(doctorUserId, appointmentId);
   const roomId = await getOrCreateAppointmentSessionRoom(
@@ -1719,6 +1888,7 @@ export async function getPatientSessionWorkspaceData(
   currentUser: AuthenticatedUser,
   appointmentId: string,
 ): Promise<PatientSessionWorkspaceData> {
+  await maybeFlushBufferedChatMessages();
   const patientUserId = await requirePatient(currentUser);
   const appointment = await getAppointmentForPatient(patientUserId, appointmentId);
   const roomId = await getOrCreateAppointmentSessionRoom(
@@ -1784,23 +1954,23 @@ export async function sendDoctorSessionMessage(
     appointment.doctorUserId,
     appointment.patientUserId,
   );
+  const messageId = crypto.randomUUID();
   const now = new Date();
+  const clientTimestamp = Date.now();
 
-  await db.transaction(async (tx) => {
-    await tx.insert(chatMessages).values({
-      id: crypto.randomUUID(),
-      roomId,
-      senderUserId: doctorUserId,
-      text,
-      createdAt: now,
-      clientTimestamp: Date.now(),
-      deliveryStatus: "SENT",
-    });
+  await db
+    .update(chatRooms)
+    .set({ lastMessageAt: now })
+    .where(eq(chatRooms.id, roomId));
 
-    await tx
-      .update(chatRooms)
-      .set({ lastMessageAt: now })
-      .where(eq(chatRooms.id, roomId));
+  await emitChatRealtimeAndBuffer({
+    id: messageId,
+    roomId,
+    senderUserId: doctorUserId,
+    senderName: currentUser.name,
+    text,
+    createdAt: now,
+    clientTimestamp,
   });
 }
 
@@ -1818,23 +1988,23 @@ export async function sendPatientSessionMessage(
     appointment.doctorUserId,
     appointment.patientUserId,
   );
+  const messageId = crypto.randomUUID();
   const now = new Date();
+  const clientTimestamp = Date.now();
 
-  await db.transaction(async (tx) => {
-    await tx.insert(chatMessages).values({
-      id: crypto.randomUUID(),
-      roomId,
-      senderUserId: patientUserId,
-      text,
-      createdAt: now,
-      clientTimestamp: Date.now(),
-      deliveryStatus: "SENT",
-    });
+  await db
+    .update(chatRooms)
+    .set({ lastMessageAt: now })
+    .where(eq(chatRooms.id, roomId));
 
-    await tx
-      .update(chatRooms)
-      .set({ lastMessageAt: now })
-      .where(eq(chatRooms.id, roomId));
+  await emitChatRealtimeAndBuffer({
+    id: messageId,
+    roomId,
+    senderUserId: patientUserId,
+    senderName: currentUser.name,
+    text,
+    createdAt: now,
+    clientTimestamp,
   });
 }
 
@@ -1900,21 +2070,21 @@ export async function sendDoctorChatMessage(
   await ensureBookedAppointmentPair(doctorUserId, room.patientUserId);
 
   const now = new Date();
-  await db.transaction(async (tx) => {
-    await tx.insert(chatMessages).values({
-      id: crypto.randomUUID(),
-      roomId: room.id,
-      senderUserId: doctorUserId,
-      text: message,
-      createdAt: now,
-      clientTimestamp: Date.now(),
-      deliveryStatus: "SENT",
-    });
+  const messageId = crypto.randomUUID();
+  const clientTimestamp = Date.now();
+  await db
+    .update(chatRooms)
+    .set({ lastMessageAt: now })
+    .where(eq(chatRooms.id, room.id));
 
-    await tx
-      .update(chatRooms)
-      .set({ lastMessageAt: now })
-      .where(eq(chatRooms.id, room.id));
+  await emitChatRealtimeAndBuffer({
+    id: messageId,
+    roomId: room.id,
+    senderUserId: doctorUserId,
+    senderName: currentUser.name,
+    text: message,
+    createdAt: now,
+    clientTimestamp,
   });
 }
 
@@ -1966,6 +2136,7 @@ export async function getPatientChatWorkspaceData(
   currentUser: AuthenticatedUser,
   selectedRoomId?: string | null,
 ): Promise<PatientChatWorkspaceData> {
+  await maybeFlushBufferedChatMessages();
   const patientUserId = await requirePatient(currentUser);
   await syncPatientRoomsFromBookedAppointments(patientUserId);
 
@@ -1988,29 +2159,50 @@ export async function getPatientChatWorkspaceData(
     .limit(40);
 
   const roomIds = rooms.map((room) => room.id);
-  const messages = roomIds.length
-    ? await db
-        .select({
-          roomId: chatMessages.roomId,
-          text: chatMessages.text,
-          createdAt: chatMessages.createdAt,
-        })
-        .from(chatMessages)
-        .where(inArray(chatMessages.roomId, roomIds))
-        .orderBy(desc(chatMessages.createdAt))
-    : [];
+  const [messages, bufferedByRoom] = await Promise.all([
+    roomIds.length
+      ? db
+          .select({
+            roomId: chatMessages.roomId,
+            text: chatMessages.text,
+            createdAt: chatMessages.createdAt,
+          })
+          .from(chatMessages)
+          .where(inArray(chatMessages.roomId, roomIds))
+          .orderBy(desc(chatMessages.createdAt))
+      : Promise.resolve([]),
+    getBufferedChatMessagesByRoomIds(roomIds),
+  ]);
 
-  const latestMessageByRoomId = new Map<string, string>();
+  const latestMessageByRoomId = new Map<
+    string,
+    { text: string; createdAt: number }
+  >();
   for (const row of messages) {
     if (latestMessageByRoomId.has(row.roomId)) continue;
-    latestMessageByRoomId.set(row.roomId, row.text);
+    latestMessageByRoomId.set(row.roomId, {
+      text: row.text,
+      createdAt: row.createdAt.getTime(),
+    });
+  }
+  for (const [roomId, bufferedMessages] of bufferedByRoom.entries()) {
+    const latestBuffered = bufferedMessages[bufferedMessages.length - 1];
+    if (!latestBuffered) continue;
+    const latestBufferedAt = latestBuffered.createdAt.getTime();
+    const existing = latestMessageByRoomId.get(roomId);
+    if (!existing || latestBufferedAt > existing.createdAt) {
+      latestMessageByRoomId.set(roomId, {
+        text: latestBuffered.text,
+        createdAt: latestBufferedAt,
+      });
+    }
   }
 
   const hasSelectedRoom =
     typeof selectedRoomId === "string" &&
     rooms.some((room) => room.id === selectedRoomId);
   const activeRoomId = hasSelectedRoom ? selectedRoomId : (rooms[0]?.id ?? null);
-  const selectedRoomMessages =
+  const selectedRoomMessagesPersisted =
     activeRoomId !== null
       ? await db
           .select({
@@ -2027,10 +2219,27 @@ export async function getPatientChatWorkspaceData(
           .limit(120)
       : [];
 
+  const selectedRoomBuffered =
+    activeRoomId !== null
+      ? (bufferedByRoom.get(activeRoomId) ?? []).map((item) =>
+          toSessionMessageFromBuffered({
+            id: item.id,
+            senderUserId: item.senderUserId,
+            senderName: item.senderName,
+            text: item.text,
+            createdAt: item.createdAt,
+          }),
+        )
+      : [];
+  const selectedRoomMessages = mergeSessionMessages(
+    selectedRoomMessagesPersisted,
+    selectedRoomBuffered,
+  );
+
   return {
     rooms: rooms.map((room) => ({
       ...room,
-      latestMessage: latestMessageByRoomId.get(room.id) ?? null,
+      latestMessage: latestMessageByRoomId.get(room.id)?.text ?? null,
     })),
     selectedRoomId: activeRoomId,
     selectedRoomMessages,
@@ -2067,23 +2276,23 @@ export async function sendPatientChatMessage(
   await ensureBookedAppointmentPair(room.doctorUserId, patientUserId);
 
   const now = new Date();
-  await db.transaction(async (tx) => {
-    await tx.insert(chatMessages).values({
-      id: crypto.randomUUID(),
-      roomId: room.id,
-      senderUserId: patientUserId,
-      text,
-      createdAt: now,
-      clientTimestamp: Date.now(),
-      deliveryStatus: "SENT",
-    });
+  const messageId = crypto.randomUUID();
+  const clientTimestamp = Date.now();
+  await db
+    .update(chatRooms)
+    .set({
+      lastMessageAt: now,
+    })
+    .where(eq(chatRooms.id, room.id));
 
-    await tx
-      .update(chatRooms)
-      .set({
-        lastMessageAt: now,
-      })
-      .where(eq(chatRooms.id, room.id));
+  await emitChatRealtimeAndBuffer({
+    id: messageId,
+    roomId: room.id,
+    senderUserId: patientUserId,
+    senderName: currentUser.name,
+    text,
+    createdAt: now,
+    clientTimestamp,
   });
 }
 
@@ -2150,10 +2359,10 @@ export async function getPatientScheduleData(
         lte(appointmentSlots.startsAt, horizon),
       ),
     )
-    .orderBy(asc(appointmentSlots.startsAt))
-    .limit(CALENDAR_SLOT_FETCH_LIMIT);
+      .orderBy(asc(appointmentSlots.startsAt))
+      .limit(CALENDAR_SLOT_FETCH_LIMIT);
 
-  const [availableSlots, bookedAppointments] = await Promise.all([
+  const [rawAvailableSlots, bookedAppointments] = await Promise.all([
     availableSlotsPromise,
     db
       .select({
@@ -2176,6 +2385,27 @@ export async function getPatientScheduleData(
       .orderBy(desc(appointmentSlots.startsAt))
       .limit(120),
   ]);
+
+  const actionableBookedIntervals = bookedAppointments
+    .filter(
+      (item) =>
+        (item.status === "BOOKED" || item.status === "CONFIRMED") &&
+        item.endsAt > now,
+    )
+    .map((item) => ({
+      startsAt: item.startsAt,
+      endsAt: item.endsAt,
+    }));
+
+  const availableSlots = rawAvailableSlots.filter(
+    (slot) =>
+      !actionableBookedIntervals.some((booked) =>
+        intervalsOverlap(
+          { startsAt: slot.startsAt, endsAt: slot.endsAt },
+          booked,
+        ),
+      ),
+  );
 
   return {
     doctorLinks,
@@ -2205,6 +2435,26 @@ export async function bookPatientAppointmentSlot(
   if (!slot) throw new Error("Slot not found.");
   if (slot.status !== "OPEN") throw new Error("This slot is no longer available.");
   if (slot.startsAt < new Date()) throw new Error("Cannot book a past slot.");
+
+  const [overlapBeforeBooking] = await db
+    .select({ id: appointments.id })
+    .from(appointments)
+    .innerJoin(appointmentSlots, eq(appointments.slotId, appointmentSlots.id))
+    .where(
+      and(
+        eq(appointments.patientUserId, patientUserId),
+        inArray(appointments.status, ["BOOKED", "CONFIRMED"]),
+        lt(appointmentSlots.startsAt, slot.endsAt),
+        gt(appointmentSlots.endsAt, slot.startsAt),
+      ),
+    )
+    .limit(1);
+
+  if (overlapBeforeBooking) {
+    throw new Error(
+      "You already have an appointment that overlaps this time window.",
+    );
+  }
 
   const [existingLink] = await db
     .select({
@@ -2272,6 +2522,29 @@ export async function bookPatientAppointmentSlot(
         throw new Error("You are not allowed to book with this doctor.");
       }
 
+      const [overlapInTx] = await tx
+        .select({ id: appointments.id })
+        .from(appointments)
+        .innerJoin(
+          appointmentSlots,
+          eq(appointments.slotId, appointmentSlots.id),
+        )
+        .where(
+          and(
+            eq(appointments.patientUserId, patientUserId),
+            inArray(appointments.status, ["BOOKED", "CONFIRMED"]),
+            lt(appointmentSlots.startsAt, slot.endsAt),
+            gt(appointmentSlots.endsAt, slot.startsAt),
+          ),
+        )
+        .limit(1);
+
+      if (overlapInTx) {
+        throw new Error(
+          "You already have an appointment that overlaps this time window.",
+        );
+      }
+
       await tx.insert(appointments).values({
         id: appointmentId,
         slotId: slot.slotId,
@@ -2298,21 +2571,21 @@ export async function bookPatientAppointmentSlot(
   const bookingMessage = input.bookingMessage?.trim();
   if (bookingMessage) {
     const now = new Date();
-    await db.transaction(async (tx) => {
-      await tx.insert(chatMessages).values({
-        id: crypto.randomUUID(),
-        roomId,
-        senderUserId: patientUserId,
-        text: bookingMessage.slice(0, 4000),
-        createdAt: now,
-        clientTimestamp: Date.now(),
-        deliveryStatus: "SENT",
-      });
+    const messageId = crypto.randomUUID();
+    const clientTimestamp = Date.now();
+    await db
+      .update(chatRooms)
+      .set({ lastMessageAt: now })
+      .where(eq(chatRooms.id, roomId));
 
-      await tx
-        .update(chatRooms)
-        .set({ lastMessageAt: now })
-        .where(eq(chatRooms.id, roomId));
+    await emitChatRealtimeAndBuffer({
+      id: messageId,
+      roomId,
+      senderUserId: patientUserId,
+      senderName: currentUser.name,
+      text: bookingMessage.slice(0, 4000),
+      createdAt: now,
+      clientTimestamp,
     });
   }
 
@@ -2414,10 +2687,37 @@ export async function uploadEncryptedReport(
     throw new Error("Invalid patient account.");
   }
 
-  const [doctorKeyMeta, patientKeyMeta] = await Promise.all([
+  const [doctorKeyMeta, patientKeyMeta, staffRows] = await Promise.all([
     getActiveUserKeyMeta(doctorUserId),
     getActiveUserKeyMeta(input.patientUserId),
+    db
+      .select({
+        staffUserId: doctorStaff.staffUserId,
+      })
+      .from(doctorStaff)
+      .where(
+        and(
+          eq(doctorStaff.doctorUserId, doctorUserId),
+          eq(doctorStaff.isActive, true),
+        ),
+      ),
   ]);
+
+  const staffKeyMetaRows = (
+    await Promise.all(
+      staffRows.map(async (row) => {
+        try {
+          const keyMeta = await getActiveUserKeyMeta(row.staffUserId);
+          return {
+            staffUserId: row.staffUserId,
+            keyMeta,
+          };
+        } catch {
+          return null;
+        }
+      }),
+    )
+  ).filter((row): row is { staffUserId: string; keyMeta: Awaited<ReturnType<typeof getActiveUserKeyMeta>> } => row !== null);
 
   const documentId = crypto.randomUUID();
   const dek = crypto.randomBytes(32);
@@ -2475,6 +2775,16 @@ export async function uploadEncryptedReport(
         grantedByUserId: doctorUserId,
         createdAt: now,
       },
+      ...staffKeyMetaRows.map((row) => ({
+        id: crypto.randomUUID(),
+        documentId,
+        userId: row.staffUserId,
+        roleAtGrant: "STAFF" as const,
+        canRead: true,
+        canWrite: false,
+        grantedByUserId: doctorUserId,
+        createdAt: now,
+      })),
     ]);
 
     await tx.insert(documentKeyrings).values([
@@ -2496,6 +2806,15 @@ export async function uploadEncryptedReport(
         wrapAlgo: "AES-256-GCM/USER-SIGNATURE-KDF-v1",
         createdAt: now,
       },
+      ...staffKeyMetaRows.map((row) => ({
+        id: crypto.randomUUID(),
+        documentId,
+        userId: row.staffUserId,
+        userKeyVersion: row.keyMeta.keyVersion,
+        wrappedDek: wrapDek(row.keyMeta, dek),
+        wrapAlgo: "AES-256-GCM/USER-SIGNATURE-KDF-v1",
+        createdAt: now,
+      })),
     ]);
   });
 
@@ -2510,6 +2829,558 @@ export async function uploadEncryptedReport(
   );
 
   return documentId;
+}
+
+async function getReadableDocumentForUser(userId: string, documentId: string) {
+  const [[row], [viewer]] = await Promise.all([
+    db
+      .select({
+        id: documents.id,
+        ownerDoctorUserId: documents.ownerDoctorUserId,
+        patientUserId: documents.patientUserId,
+        title: documents.title,
+        originalFileName: documents.originalFileName,
+        mimeType: documents.mimeType,
+        storageKey: documents.storageKey,
+        encryptedIv: documents.encryptedIv,
+        encryptedTag: documents.encryptedTag,
+        canRead: documentAccess.canRead,
+        canWrite: documentAccess.canWrite,
+      })
+      .from(documents)
+      .leftJoin(
+        documentAccess,
+        and(
+          eq(documentAccess.documentId, documents.id),
+          eq(documentAccess.userId, userId),
+        ),
+      )
+      .where(eq(documents.id, documentId))
+      .limit(1),
+    db
+      .select({ role: user.role })
+      .from(user)
+      .where(eq(user.id, userId))
+      .limit(1),
+  ]);
+
+  if (!row) {
+    throw new Error("Report not found.");
+  }
+  if (!viewer) {
+    throw new Error("User not found.");
+  }
+
+  if (row.ownerDoctorUserId !== userId && !row.canRead && !row.canWrite) {
+    throw new Error("You do not have access to this report.");
+  }
+
+  if (viewer.role === "STAFF") {
+    const [activeAssignment] = await db
+      .select({ id: doctorStaff.id })
+      .from(doctorStaff)
+      .where(
+        and(
+          eq(doctorStaff.doctorUserId, row.ownerDoctorUserId),
+          eq(doctorStaff.staffUserId, userId),
+          eq(doctorStaff.isActive, true),
+        ),
+      )
+      .limit(1);
+
+    if (!activeAssignment) {
+      throw new Error("Staff access has been revoked for this report.");
+    }
+  }
+
+  return row;
+}
+
+async function rotateDocumentEncryptionForAccessibleUsers(input: {
+  documentId: string;
+  decryptingUserId: string;
+}) {
+  const [documentRow, decryptingKeyMeta, sourceKeyring, accessRows] =
+    await Promise.all([
+      getReadableDocumentForUser(input.decryptingUserId, input.documentId),
+      getActiveUserKeyMeta(input.decryptingUserId),
+      getLatestUserKeyring(input.documentId, input.decryptingUserId),
+      db
+        .select({
+          userId: documentAccess.userId,
+          canRead: documentAccess.canRead,
+          canWrite: documentAccess.canWrite,
+        })
+        .from(documentAccess)
+        .where(eq(documentAccess.documentId, input.documentId)),
+    ]);
+
+  if (!sourceKeyring) {
+    throw new Error("Source document keyring not found for re-encryption.");
+  }
+
+  const sourceDek = unwrapDek(
+    {
+      ...decryptingKeyMeta,
+      keyVersion: sourceKeyring.userKeyVersion,
+    },
+    sourceKeyring.wrappedDek,
+  );
+
+  const oldEncryptedBytes = await readEncryptedFile(documentRow.storageKey);
+  const plainBytes = decryptFileWithDek({
+    encryptedBytes: oldEncryptedBytes,
+    dek: sourceDek,
+    ivBase64: documentRow.encryptedIv,
+    tagBase64: documentRow.encryptedTag,
+  });
+
+  const newDek = crypto.randomBytes(32);
+  const nextEncrypted = encryptFileWithDek(plainBytes, newDek);
+  const contentSha256 = crypto
+    .createHash("sha256")
+    .update(plainBytes)
+    .digest("hex");
+
+  const recipientIds = Array.from(
+    new Set([
+      documentRow.ownerDoctorUserId,
+      documentRow.patientUserId,
+      ...accessRows
+        .filter((row) => row.canRead || row.canWrite)
+        .map((row) => row.userId),
+    ]),
+  );
+
+  const recipientMetas = (
+    await Promise.all(
+      recipientIds.map(async (userId) => {
+        try {
+          return await getActiveUserKeyMeta(userId);
+        } catch {
+          return null;
+        }
+      }),
+    )
+  ).filter((row): row is Awaited<ReturnType<typeof getActiveUserKeyMeta>> => row !== null);
+
+  if (recipientMetas.length === 0) {
+    throw new Error("No active user keys available for report re-encryption.");
+  }
+
+  const recipientsWithKeys = new Set(recipientMetas.map((row) => row.userId));
+  const revokedUserIds = recipientIds.filter((userId) => !recipientsWithKeys.has(userId));
+
+  await writeEncryptedFile(documentRow.storageKey, nextEncrypted.encrypted);
+  try {
+    await db.transaction(async (tx) => {
+      await tx
+        .update(documents)
+        .set({
+          encryptedAlgo: "AES-256-GCM",
+          encryptedIv: nextEncrypted.ivBase64,
+          encryptedTag: nextEncrypted.tagBase64,
+          contentSha256,
+        })
+        .where(eq(documents.id, input.documentId));
+
+      await tx.delete(documentKeyrings).where(eq(documentKeyrings.documentId, input.documentId));
+
+      if (revokedUserIds.length > 0) {
+        await tx
+          .delete(documentAccess)
+          .where(
+            and(
+              eq(documentAccess.documentId, input.documentId),
+              inArray(documentAccess.userId, revokedUserIds),
+            ),
+          );
+      }
+
+      await tx.insert(documentKeyrings).values(
+        recipientMetas.map((meta) => ({
+          id: crypto.randomUUID(),
+          documentId: input.documentId,
+          userId: meta.userId,
+          userKeyVersion: meta.keyVersion,
+          wrappedDek: wrapDek(meta, newDek),
+          wrapAlgo: "AES-256-GCM/USER-SIGNATURE-KDF-v1",
+          createdAt: new Date(),
+        })),
+      );
+    });
+  } catch (error) {
+    await writeEncryptedFile(documentRow.storageKey, oldEncryptedBytes);
+    throw error;
+  }
+}
+
+export async function downloadReportForUser(
+  currentUser: AuthenticatedUser,
+  documentId: string,
+) {
+  const doc = await getReadableDocumentForUser(currentUser.id, documentId);
+  const keyMeta = await getActiveUserKeyMeta(currentUser.id);
+  const keyring = await getLatestUserKeyring(documentId, currentUser.id);
+  if (!keyring) {
+    throw new Error("No document key available for this account.");
+  }
+
+  const dek = unwrapDek(
+    {
+      ...keyMeta,
+      keyVersion: keyring.userKeyVersion,
+    },
+    keyring.wrappedDek,
+  );
+  const encryptedBytes = await readEncryptedFile(doc.storageKey);
+  const plainBytes = decryptFileWithDek({
+    encryptedBytes,
+    dek,
+    ivBase64: doc.encryptedIv,
+    tagBase64: doc.encryptedTag,
+  });
+
+  return {
+    bytes: plainBytes,
+    fileName: doc.originalFileName,
+    mimeType: doc.mimeType || "application/octet-stream",
+    title: doc.title,
+  };
+}
+
+export async function createReportAccessRecoveryRequestsForPatient(
+  patientUserId: string,
+) {
+  const activeLinks = await db
+    .select({
+      doctorUserId: doctorPatients.doctorUserId,
+    })
+    .from(doctorPatients)
+    .where(
+      and(
+        eq(doctorPatients.patientUserId, patientUserId),
+        eq(doctorPatients.status, "ACTIVE"),
+      ),
+    );
+
+  let totalRequests = 0;
+  let totalItems = 0;
+  for (const link of activeLinks) {
+    const docs = await db
+      .select({
+        documentId: documents.id,
+      })
+      .from(documents)
+      .innerJoin(
+        documentAccess,
+        and(
+          eq(documentAccess.documentId, documents.id),
+          eq(documentAccess.userId, patientUserId),
+          eq(documentAccess.canRead, true),
+        ),
+      )
+      .where(eq(documents.ownerDoctorUserId, link.doctorUserId));
+
+    if (docs.length === 0) continue;
+
+    const [existingPendingRequest] = await db
+      .select({
+        id: reportAccessRequests.id,
+      })
+      .from(reportAccessRequests)
+      .where(
+        and(
+          eq(reportAccessRequests.patientUserId, patientUserId),
+          eq(reportAccessRequests.doctorUserId, link.doctorUserId),
+          eq(reportAccessRequests.status, "PENDING"),
+          eq(reportAccessRequests.reason, "PASSWORD_RESET"),
+        ),
+      )
+      .orderBy(desc(reportAccessRequests.createdAt))
+      .limit(1);
+
+    if (existingPendingRequest) {
+      const existingItems = await db
+        .select({
+          documentId: reportAccessRequestItems.documentId,
+        })
+        .from(reportAccessRequestItems)
+        .where(eq(reportAccessRequestItems.requestId, existingPendingRequest.id));
+
+      const existingDocumentIds = new Set(
+        existingItems.map((row) => row.documentId),
+      );
+      const missingDocs = docs.filter(
+        (doc) => !existingDocumentIds.has(doc.documentId),
+      );
+
+      if (missingDocs.length > 0) {
+        const now = new Date();
+        await db.insert(reportAccessRequestItems).values(
+          missingDocs.map((doc) => ({
+            id: crypto.randomUUID(),
+            requestId: existingPendingRequest.id,
+            documentId: doc.documentId,
+            status: "PENDING",
+            createdAt: now,
+          })),
+        );
+        totalItems += missingDocs.length;
+      }
+
+      continue;
+    }
+
+    const requestId = crypto.randomUUID();
+    const now = new Date();
+    await db.transaction(async (tx) => {
+      await tx.insert(reportAccessRequests).values({
+        id: requestId,
+        patientUserId,
+        doctorUserId: link.doctorUserId,
+        status: "PENDING",
+        reason: "PASSWORD_RESET",
+        createdAt: now,
+      });
+
+      await tx.insert(reportAccessRequestItems).values(
+        docs.map((doc) => ({
+          id: crypto.randomUUID(),
+          requestId,
+          documentId: doc.documentId,
+          status: "PENDING",
+          createdAt: now,
+        })),
+      );
+    });
+
+    totalRequests += 1;
+    totalItems += docs.length;
+  }
+
+  return { totalRequests, totalItems };
+}
+
+export async function resolveReportAccessRecoveryRequest(
+  currentUser: AuthenticatedUser,
+  input: { requestId: string; decision: "APPROVE" | "REJECT" },
+) {
+  const doctorUserId = await requireDoctor(currentUser);
+  const [request] = await db
+    .select({
+      id: reportAccessRequests.id,
+      doctorUserId: reportAccessRequests.doctorUserId,
+      status: reportAccessRequests.status,
+      patientUserId: reportAccessRequests.patientUserId,
+    })
+    .from(reportAccessRequests)
+    .where(eq(reportAccessRequests.id, input.requestId))
+    .limit(1);
+
+  if (!request || request.doctorUserId !== doctorUserId) {
+    throw new Error("Recovery request not found.");
+  }
+  if (request.status !== "PENDING") {
+    throw new Error("Recovery request is already resolved.");
+  }
+
+  const now = new Date();
+  if (input.decision === "REJECT") {
+    await db.transaction(async (tx) => {
+      await tx
+        .update(reportAccessRequests)
+        .set({
+          status: "REJECTED",
+          resolvedAt: now,
+          resolvedByUserId: doctorUserId,
+        })
+        .where(eq(reportAccessRequests.id, request.id));
+
+      await tx
+        .update(reportAccessRequestItems)
+        .set({ status: "FAILED" })
+        .where(eq(reportAccessRequestItems.requestId, request.id));
+    });
+    return;
+  }
+
+  const items = await db
+    .select({
+      id: reportAccessRequestItems.id,
+      documentId: reportAccessRequestItems.documentId,
+    })
+    .from(reportAccessRequestItems)
+    .where(eq(reportAccessRequestItems.requestId, request.id));
+
+  for (const item of items) {
+    try {
+      await rotateDocumentEncryptionForAccessibleUsers({
+        documentId: item.documentId,
+        decryptingUserId: doctorUserId,
+      });
+
+      await db
+        .update(reportAccessRequestItems)
+        .set({ status: "REKEYED" })
+        .where(eq(reportAccessRequestItems.id, item.id));
+    } catch {
+      await db
+        .update(reportAccessRequestItems)
+        .set({ status: "FAILED" })
+        .where(eq(reportAccessRequestItems.id, item.id));
+    }
+  }
+
+  await db
+    .update(reportAccessRequests)
+    .set({
+      status: "APPROVED",
+      resolvedAt: now,
+      resolvedByUserId: doctorUserId,
+    })
+    .where(eq(reportAccessRequests.id, request.id));
+}
+
+export async function setStaffReportVisibility(
+  currentUser: AuthenticatedUser,
+  input: {
+    documentId: string;
+    staffUserId: string;
+    visible: boolean;
+  },
+) {
+  const doctorUserId = await requireDoctor(currentUser);
+
+  const [[doc], [assignment]] = await Promise.all([
+    db
+      .select({
+        id: documents.id,
+        ownerDoctorUserId: documents.ownerDoctorUserId,
+      })
+      .from(documents)
+      .where(eq(documents.id, input.documentId))
+      .limit(1),
+    db
+      .select({
+        id: doctorStaff.id,
+      })
+      .from(doctorStaff)
+      .where(
+        and(
+          eq(doctorStaff.doctorUserId, doctorUserId),
+          eq(doctorStaff.staffUserId, input.staffUserId),
+        ),
+      )
+      .limit(1),
+  ]);
+
+  if (!doc || doc.ownerDoctorUserId !== doctorUserId) {
+    throw new Error("Report not found in this doctor tenant.");
+  }
+  if (!assignment) {
+    throw new Error("Staff user is not assigned to this doctor.");
+  }
+  if (input.visible) {
+    const [activeAssignment] = await db
+      .select({ id: doctorStaff.id })
+      .from(doctorStaff)
+      .where(
+        and(
+          eq(doctorStaff.doctorUserId, doctorUserId),
+          eq(doctorStaff.staffUserId, input.staffUserId),
+          eq(doctorStaff.isActive, true),
+        ),
+      )
+      .limit(1);
+    if (!activeAssignment) {
+      throw new Error("Cannot grant report access to an inactive staff account.");
+    }
+  }
+
+  if (!input.visible) {
+    await db.transaction(async (tx) => {
+      await tx
+        .delete(documentKeyrings)
+        .where(
+          and(
+            eq(documentKeyrings.documentId, input.documentId),
+            eq(documentKeyrings.userId, input.staffUserId),
+          ),
+        );
+      await tx
+        .delete(documentAccess)
+        .where(
+          and(
+            eq(documentAccess.documentId, input.documentId),
+            eq(documentAccess.userId, input.staffUserId),
+          ),
+        );
+    });
+    return;
+  }
+
+  const [staffKeyMeta, doctorKeyMeta, sourceKeyring] = await Promise.all([
+    getActiveUserKeyMeta(input.staffUserId),
+    getActiveUserKeyMeta(doctorUserId),
+    getLatestUserKeyring(input.documentId, doctorUserId),
+  ]);
+
+  if (!sourceKeyring) {
+    throw new Error("Doctor key material missing for this report.");
+  }
+
+  const dek = unwrapDek(
+    {
+      ...doctorKeyMeta,
+      keyVersion: sourceKeyring.userKeyVersion,
+    },
+    sourceKeyring.wrappedDek,
+  );
+  const wrappedForStaff = wrapDek(staffKeyMeta, dek);
+  const now = new Date();
+
+  await db.transaction(async (tx) => {
+    await tx
+      .insert(documentAccess)
+      .values({
+        id: crypto.randomUUID(),
+        documentId: input.documentId,
+        userId: input.staffUserId,
+        roleAtGrant: "STAFF",
+        canRead: true,
+        canWrite: false,
+        grantedByUserId: doctorUserId,
+        createdAt: now,
+      })
+      .onDuplicateKeyUpdate({
+        set: {
+          canRead: true,
+          canWrite: false,
+          grantedByUserId: doctorUserId,
+        },
+      });
+
+    await tx
+      .insert(documentKeyrings)
+      .values({
+        id: crypto.randomUUID(),
+        documentId: input.documentId,
+        userId: input.staffUserId,
+        userKeyVersion: staffKeyMeta.keyVersion,
+        wrappedDek: wrappedForStaff,
+        wrapAlgo: "AES-256-GCM/USER-SIGNATURE-KDF-v1",
+        createdAt: now,
+      })
+      .onDuplicateKeyUpdate({
+        set: {
+          wrappedDek: wrappedForStaff,
+          userKeyVersion: staffKeyMeta.keyVersion,
+          wrapAlgo: "AES-256-GCM/USER-SIGNATURE-KDF-v1",
+          createdAt: now,
+        },
+      });
+  });
 }
 
 export async function requestDocumentShare(

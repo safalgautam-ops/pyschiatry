@@ -3,7 +3,7 @@
 import { useDraggable } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
 import { differenceInDays } from "date-fns";
-import { useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 
 import { useCalendarDnd } from "./calendar-dnd-context";
 import { EventItem } from "./event-item";
@@ -36,6 +36,7 @@ export function DraggableEvent({
 }: DraggableEventProps) {
   const { activeId } = useCalendarDnd();
   const elementRef = useRef<HTMLDivElement>(null);
+  const [measuredHeight, setMeasuredHeight] = useState<number | null>(null);
   const [dragHandlePosition, setDragHandlePosition] = useState<{
     x: number;
     y: number;
@@ -47,18 +48,33 @@ export function DraggableEvent({
   const isMultiDayEvent =
     isMultiDay || event.allDay || differenceInDays(eventEnd, eventStart) >= 1;
 
+  const draggableData = useMemo(
+    () => ({
+      dragHandlePosition,
+      event,
+      height: height ?? measuredHeight ?? null,
+      isFirstDay,
+      isLastDay,
+      isMultiDay: isMultiDayEvent,
+      multiDayWidth,
+      view,
+    }),
+    [
+      dragHandlePosition,
+      event,
+      height,
+      measuredHeight,
+      isFirstDay,
+      isLastDay,
+      isMultiDayEvent,
+      multiDayWidth,
+      view,
+    ],
+  );
+
   const { attributes, listeners, setNodeRef, transform, isDragging } =
     useDraggable({
-      data: {
-        dragHandlePosition,
-        event,
-        height: height || elementRef.current?.offsetHeight || null,
-        isFirstDay,
-        isLastDay,
-        isMultiDay: isMultiDayEvent,
-        multiDayWidth: multiDayWidth,
-        view,
-      },
+      data: draggableData,
       id: `${event.id}-${view}`,
     });
 
@@ -73,6 +89,15 @@ export function DraggableEvent({
       });
     }
   };
+
+  const handleSetNodeRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      setNodeRef(node);
+      elementRef.current = node;
+      setMeasuredHeight(node?.offsetHeight ?? null);
+    },
+    [setNodeRef],
+  );
 
   // Don't render if this event is being dragged
   if (isDragging || activeId === `${event.id}-${view}`) {
@@ -115,10 +140,7 @@ export function DraggableEvent({
   return (
     <div
       className="touch-none"
-      ref={(node) => {
-        setNodeRef(node);
-        if (elementRef) elementRef.current = node;
-      }}
+      ref={handleSetNodeRef}
       style={style}
     >
       <EventItem

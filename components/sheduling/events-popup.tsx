@@ -2,7 +2,7 @@
 
 import { format, isSameDay } from "date-fns";
 import { XIcon } from "lucide-react";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useRef } from "react";
 
 import { EventItem } from "./event-item";
 import type { CalendarEvent } from "./types";
@@ -60,37 +60,39 @@ export function EventsPopup({
     onClose();
   };
 
-  // Adjust position to ensure popup stays within viewport
-  const adjustedPosition = useMemo(() => {
-    const positionCopy = { ...position };
+  useEffect(() => {
+    const node = popupRef.current;
+    if (!node) return;
 
-    // Check if we need to adjust the position to fit in the viewport
-    if (popupRef.current) {
-      const rect = popupRef.current.getBoundingClientRect();
+    const frame = requestAnimationFrame(() => {
+      const popupWidth = node.offsetWidth;
+      const popupHeight = node.offsetHeight;
       const viewportWidth = window.innerWidth;
       const viewportHeight = window.innerHeight;
+      let nextLeft = position.left;
+      let nextTop = position.top;
 
-      // Adjust horizontally if needed
-      if (positionCopy.left + rect.width > viewportWidth) {
-        positionCopy.left = Math.max(0, viewportWidth - rect.width);
+      if (nextLeft + popupWidth > viewportWidth) {
+        nextLeft = Math.max(0, viewportWidth - popupWidth);
+      }
+      if (nextTop + popupHeight > viewportHeight) {
+        nextTop = Math.max(0, viewportHeight - popupHeight);
       }
 
-      // Adjust vertically if needed
-      if (positionCopy.top + rect.height > viewportHeight) {
-        positionCopy.top = Math.max(0, viewportHeight - rect.height);
-      }
-    }
+      node.style.left = `${nextLeft}px`;
+      node.style.top = `${nextTop}px`;
+    });
 
-    return positionCopy;
-  }, [position]);
+    return () => cancelAnimationFrame(frame);
+  }, [position, events.length]);
 
   return (
     <div
       className="absolute z-50 max-h-96 w-80 overflow-auto rounded-md border bg-background shadow-lg"
       ref={popupRef}
       style={{
-        left: `${adjustedPosition.left}px`,
-        top: `${adjustedPosition.top}px`,
+        left: `${position.left}px`,
+        top: `${position.top}px`,
       }}
     >
       <div className="sticky top-0 flex items-center justify-between border-b bg-background p-3">

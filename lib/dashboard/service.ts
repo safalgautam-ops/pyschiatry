@@ -3,6 +3,8 @@ import {
   account,
   appointmentSlots,
   appointments,
+  documentAccess,
+  documentKeyrings,
   doctorPatients,
   doctorStaff,
   documents,
@@ -37,6 +39,7 @@ import crypto from "node:crypto";
 const APPOINTMENT_ACTIVE_STATUSES = ["BOOKED", "CONFIRMED"] as const;
 const PATIENT_LINK_ACTIVE_STATUSES = ["ACTIVE"] as const;
 const STAFF_ASSIGNMENT_ROLES = ["ADMIN", "RECEPTION"] as const;
+let staffOnboardingColumnsSupported: boolean | null = null;
 
 function makeSignature() {
   return crypto.randomBytes(32).toString("hex");
@@ -225,12 +228,60 @@ function unique(values: string[]) {
   return [...new Set(values)];
 }
 
+function isUnknownColumnError(error: unknown) {
+  if (!error) return false;
+  const code =
+    typeof error === "object" && error !== null
+      ? (error as { code?: string }).code
+      : undefined;
+  if (code === "ER_BAD_FIELD_ERROR" || code === "ER_NO_SUCH_TABLE") {
+    return true;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("Unknown column");
+}
+
+async function supportsStaffOnboardingColumns() {
+  if (staffOnboardingColumnsSupported !== null) {
+    return staffOnboardingColumnsSupported;
+  }
+
+  try {
+    await db
+      .select({
+        id: staffProfile.id,
+      })
+      .from(staffProfile)
+      .where(eq(staffProfile.mustChangePassword, false))
+      .limit(1);
+    staffOnboardingColumnsSupported = true;
+  } catch (error) {
+    if (isUnknownColumnError(error)) {
+      staffOnboardingColumnsSupported = false;
+    } else {
+      throw error;
+    }
+  }
+
+  return staffOnboardingColumnsSupported;
+}
+
 function toDateKey(value: Date | string) {
   const date = new Date(value);
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+function intervalsOverlap(
+  left: { startsAt: Date; endsAt: Date },
+  right: { startsAt: Date; endsAt: Date },
+) {
+  return (
+    left.startsAt.getTime() < right.endsAt.getTime() &&
+    left.endsAt.getTime() > right.startsAt.getTime()
+  );
 }
 
 function isDoctorInScope(scope: string[], doctorUserId: string) {
@@ -401,7 +452,7 @@ export async function getDashboardSummary(
           .limit(120)
       : [];
 
-  const patientAvailableSlots =
+  const rawPatientAvailableSlots =
     currentUser.role === "PATIENT"
       ? await db
           .select({
@@ -424,6 +475,34 @@ export async function getDashboardSummary(
           .orderBy(asc(appointmentSlots.startsAt))
           .limit(200)
       : [];
+
+  const patientActiveIntervals =
+    currentUser.role === "PATIENT"
+      ? patientAppointments
+          .filter(
+            (appointment) =>
+              (appointment.status === "BOOKED" ||
+                appointment.status === "CONFIRMED") &&
+              appointment.endsAt > now,
+          )
+          .map((appointment) => ({
+            startsAt: appointment.startsAt,
+            endsAt: appointment.endsAt,
+          }))
+      : [];
+
+  const patientAvailableSlots =
+    currentUser.role === "PATIENT"
+      ? rawPatientAvailableSlots.filter(
+          (slot) =>
+            !patientActiveIntervals.some((interval) =>
+              intervalsOverlap(
+                { startsAt: slot.startsAt, endsAt: slot.endsAt },
+                interval,
+              ),
+            ),
+        )
+      : rawPatientAvailableSlots;
 
   const patientVisibleDoctorIds =
     currentUser.role === "PATIENT"
@@ -931,6 +1010,8 @@ export async function updateDoctorStaffStatus(
     .select({
       id: doctorStaff.id,
       doctorUserId: doctorStaff.doctorUserId,
+      staffUserId: doctorStaff.staffUserId,
+      isActive: doctorStaff.isActive,
     })
     .from(doctorStaff)
     .where(eq(doctorStaff.id, input.doctorStaffId))
@@ -939,15 +1020,50 @@ export async function updateDoctorStaffStatus(
   if (!assignment) throw new Error("Doctor-staff assignment not found.");
   assertCanManageScope(scope, currentUser.id, assignment.doctorUserId);
 
-  await db
-    .update(doctorStaff)
-    .set({
-      ...(typeof input.isActive === "boolean"
-        ? { isActive: input.isActive }
-        : {}),
-      ...(input.staffRole ? { staffRole: input.staffRole } : {}),
-    })
-    .where(eq(doctorStaff.id, input.doctorStaffId));
+  await db.transaction(async (tx) => {
+    await tx
+      .update(doctorStaff)
+      .set({
+        ...(typeof input.isActive === "boolean"
+          ? { isActive: input.isActive }
+          : {}),
+        ...(input.staffRole ? { staffRole: input.staffRole } : {}),
+      })
+      .where(eq(doctorStaff.id, input.doctorStaffId));
+
+    if (input.isActive === false && assignment.isActive) {
+      // Revoke document access/keyrings for this doctor's reports when staff is deactivated.
+      await tx
+        .delete(documentAccess)
+        .where(
+          and(
+            eq(documentAccess.userId, assignment.staffUserId),
+            inArray(
+              documentAccess.documentId,
+              tx
+                .select({ id: documents.id })
+                .from(documents)
+                .where(eq(documents.ownerDoctorUserId, assignment.doctorUserId)),
+            ),
+          ),
+        );
+
+      await tx
+        .delete(documentKeyrings)
+        .where(
+          and(
+            eq(documentKeyrings.userId, assignment.staffUserId),
+            inArray(
+              documentKeyrings.documentId,
+              tx
+                .select({ id: documents.id })
+                .from(documents)
+                .where(eq(documents.ownerDoctorUserId, assignment.doctorUserId)),
+            ),
+          ),
+        );
+    }
+  });
 }
 
 export async function createStaffAccountForDoctor(
@@ -967,6 +1083,7 @@ export async function createStaffAccountForDoctor(
   const jobTitle = input.jobTitle?.trim() ?? "";
   const address = input.address?.trim() ?? "";
   const notes = input.notes?.trim() ?? "";
+  const onboardingColumnsEnabled = await supportsStaffOnboardingColumns();
 
   if (!name) throw new Error("Staff name is required.");
   if (!email) throw new Error("Staff email is required.");
@@ -988,13 +1105,15 @@ export async function createStaffAccountForDoctor(
     throw new Error("A user with this email already exists.");
   }
 
-  const existingUsername = await db
-    .select({ id: staffProfile.id })
-    .from(staffProfile)
-    .where(eq(staffProfile.username, username))
-    .limit(1);
-  if (existingUsername.length > 0) {
-    throw new Error("This staff username is already in use.");
+  if (onboardingColumnsEnabled) {
+    const existingUsername = await db
+      .select({ id: staffProfile.id })
+      .from(staffProfile)
+      .where(eq(staffProfile.username, username))
+      .limit(1);
+    if (existingUsername.length > 0) {
+      throw new Error("This staff username is already in use.");
+    }
   }
 
   const userId = crypto.randomUUID();
@@ -1030,18 +1149,26 @@ export async function createStaffAccountForDoctor(
       password: hashedPassword,
     });
 
-    await tx.insert(staffProfile).values({
-      id: profileId,
-      userId,
-      staffRole,
-      username,
-      jobTitle: jobTitle || null,
-      address: address || null,
-      notes: notes || null,
-      mustChangePassword: true,
-      profileCompleted: false,
-      createdByDoctorUserId: currentUser.id,
-    });
+    if (onboardingColumnsEnabled) {
+      await tx.insert(staffProfile).values({
+        id: profileId,
+        userId,
+        staffRole,
+        username,
+        jobTitle: jobTitle || null,
+        address: address || null,
+        notes: notes || null,
+        mustChangePassword: true,
+        profileCompleted: false,
+        createdByDoctorUserId: currentUser.id,
+      });
+    } else {
+      await tx.insert(staffProfile).values({
+        id: profileId,
+        userId,
+        staffRole,
+      });
+    }
 
     await tx.insert(doctorStaff).values({
       id: doctorStaffId,
@@ -1064,25 +1191,26 @@ export async function createStaffAccountForDoctor(
     });
   });
 
-  await sendMailSafely("send staff account created email to staff", () =>
-    sendStaffAccountCreatedEmailToStaff({
-      staffEmail: email,
-      staffName: name,
-      doctorName: currentUser.name,
-      temporaryPassword: password,
-      staffRole,
-    }),
-  );
-
-  await sendMailSafely("send staff account created email to doctor", () =>
-    sendStaffAccountCreatedEmailToDoctor({
-      doctorEmail: currentUser.email,
-      doctorName: currentUser.name,
-      staffName: name,
-      staffEmail: email,
-      staffRole,
-    }),
-  );
+  await Promise.all([
+    sendMailSafely("send staff account created email to staff", () =>
+      sendStaffAccountCreatedEmailToStaff({
+        staffEmail: email,
+        staffName: name,
+        doctorName: currentUser.name,
+        temporaryPassword: password,
+        staffRole,
+      }),
+    ),
+    sendMailSafely("send staff account created email to doctor", () =>
+      sendStaffAccountCreatedEmailToDoctor({
+        doctorEmail: currentUser.email,
+        doctorName: currentUser.name,
+        staffName: name,
+        staffEmail: email,
+        staffRole,
+      }),
+    ),
+  ]);
 }
 
 export async function getStaffOnboardingStatus(
@@ -1090,6 +1218,40 @@ export async function getStaffOnboardingStatus(
 ): Promise<StaffOnboardingStatus> {
   if (currentUser.role !== "STAFF") {
     return { required: false, profile: null };
+  }
+
+  const onboardingColumnsEnabled = await supportsStaffOnboardingColumns();
+
+  if (!onboardingColumnsEnabled) {
+    const [legacyRow] = await db
+      .select({
+        name: user.name,
+        email: user.email,
+        phone: user.phone,
+        staffRole: staffProfile.staffRole,
+      })
+      .from(staffProfile)
+      .innerJoin(user, eq(staffProfile.userId, user.id))
+      .where(eq(staffProfile.userId, currentUser.id))
+      .limit(1);
+
+    if (!legacyRow) {
+      return { required: false, profile: null };
+    }
+
+    return {
+      required: false,
+      profile: {
+        name: legacyRow.name,
+        email: legacyRow.email,
+        phone: legacyRow.phone ?? "",
+        username: "",
+        staffRole: legacyRow.staffRole,
+        jobTitle: "",
+        address: "",
+        notes: "",
+      },
+    };
   }
 
   const [row] = await db
@@ -1156,19 +1318,22 @@ export async function completeStaffOnboardingProfile(
   const jobTitle = input.jobTitle?.trim() ?? "";
   const address = input.address?.trim() ?? "";
   const notes = input.notes?.trim() ?? "";
+  const onboardingColumnsEnabled = await supportsStaffOnboardingColumns();
 
   if (!name) throw new Error("Name is required.");
   if (!phone) throw new Error("Phone is required.");
   if (!username) throw new Error("Username is required.");
 
-  const [usernameOwner] = await db
-    .select({ userId: staffProfile.userId })
-    .from(staffProfile)
-    .where(eq(staffProfile.username, username))
-    .limit(1);
+  if (onboardingColumnsEnabled) {
+    const [usernameOwner] = await db
+      .select({ userId: staffProfile.userId })
+      .from(staffProfile)
+      .where(eq(staffProfile.username, username))
+      .limit(1);
 
-  if (usernameOwner && usernameOwner.userId !== currentUser.id) {
-    throw new Error("This username is already used by another staff account.");
+    if (usernameOwner && usernameOwner.userId !== currentUser.id) {
+      throw new Error("This username is already used by another staff account.");
+    }
   }
 
   await db.transaction(async (tx) => {
@@ -1180,17 +1345,19 @@ export async function completeStaffOnboardingProfile(
       })
       .where(eq(user.id, currentUser.id));
 
-    await tx
-      .update(staffProfile)
-      .set({
-        username,
-        jobTitle: jobTitle || null,
-        address: address || null,
-        notes: notes || null,
-        profileCompleted: true,
-        mustChangePassword: false,
-      })
-      .where(eq(staffProfile.userId, currentUser.id));
+    if (onboardingColumnsEnabled) {
+      await tx
+        .update(staffProfile)
+        .set({
+          username,
+          jobTitle: jobTitle || null,
+          address: address || null,
+          notes: notes || null,
+          profileCompleted: true,
+          mustChangePassword: false,
+        })
+        .where(eq(staffProfile.userId, currentUser.id));
+    }
   });
 }
 

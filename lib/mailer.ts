@@ -107,6 +107,14 @@ function formatAppointmentWindow(startsAt: Date, endsAt: Date) {
 
 function createTransporter() {
   const smtp = getSmtpConfig();
+  const connectionTimeout = Number(
+    process.env.SMTP_CONNECTION_TIMEOUT_MS ?? "8000",
+  );
+  const greetingTimeout = Number(
+    process.env.SMTP_GREETING_TIMEOUT_MS ?? "8000",
+  );
+  const socketTimeout = Number(process.env.SMTP_SOCKET_TIMEOUT_MS ?? "10000");
+
   return nodemailer.createTransport({
     host: smtp.host,
     port: smtp.port,
@@ -115,6 +123,18 @@ function createTransporter() {
       user: smtp.user,
       pass: smtp.pass,
     },
+    connectionTimeout:
+      Number.isFinite(connectionTimeout) && connectionTimeout > 0
+        ? connectionTimeout
+        : 8000,
+    greetingTimeout:
+      Number.isFinite(greetingTimeout) && greetingTimeout > 0
+        ? greetingTimeout
+        : 8000,
+    socketTimeout:
+      Number.isFinite(socketTimeout) && socketTimeout > 0
+        ? socketTimeout
+        : 10000,
   });
 }
 
@@ -485,9 +505,18 @@ export async function sendStaffAccountCreatedEmailToDoctor(input: {
 export async function sendMailSafely(
   actionLabel: string,
   fn: () => Promise<void>,
+  timeoutMs = 12000,
 ) {
   try {
-    await fn();
+    await Promise.race([
+      fn(),
+      new Promise<void>((_, reject) => {
+        setTimeout(
+          () => reject(new Error(`timed out after ${timeoutMs}ms`)),
+          timeoutMs,
+        );
+      }),
+    ]);
   } catch (error) {
     console.error(`[mailer] ${actionLabel} failed`, error);
   }
