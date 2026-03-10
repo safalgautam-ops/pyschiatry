@@ -12,9 +12,7 @@ import {
   startOfWeek,
   subWeeks,
 } from "date-fns";
-import {
-  setDoctorStaffStatusAction,
-} from "@/lib/actions/dashboard-actions";
+import { setDoctorStaffStatusAction } from "@/lib/actions/dashboard-actions";
 import {
   bookPatientSlotAction,
   clearDoctorHolidayAction,
@@ -75,6 +73,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useCalendarSystemPreference } from "@/hooks/use-calendar-system-preference";
+import { GlowingEffect } from "@/components/ui/glowing-effect";
 
 type DashboardWorkspaceProps = {
   user: AuthenticatedUser;
@@ -209,7 +208,10 @@ function SummaryCards({
   return (
     <Frame className="grid grid-cols-1 gap-1 md:grid-cols-2 xl:grid-cols-3">
       {items.map((item) => (
-        <FramePanel key={item.label} className="space-y-2 p-5 m-0! h-full">
+        <FramePanel
+          key={item.label}
+          className="space-y-2 p-5 m-0! h-full border-none"
+        >
           <p className="font-at-aero-medium text-muted-foreground text-sm">
             {item.label}
           </p>
@@ -220,10 +222,7 @@ function SummaryCards({
   );
 }
 
-export function DashboardWorkspace({
-  user,
-  summary,
-}: DashboardWorkspaceProps) {
+export function DashboardWorkspace({ user, summary }: DashboardWorkspaceProps) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
 
@@ -272,7 +271,9 @@ export function DashboardWorkspace({
           slotOptions: options,
           slotStatus: "OPEN" as const,
           title:
-            doctorCount > 1 ? `Open Slot (${doctorCount} doctors)` : "Open Slot",
+            doctorCount > 1
+              ? `Open Slot (${doctorCount} doctors)`
+              : "Open Slot",
           description:
             doctorCount > 1
               ? `${doctorCount} doctors available for this time.`
@@ -344,10 +345,7 @@ export function DashboardWorkspace({
     });
   };
 
-  const bookPatientSlot = (
-    slotId: string,
-    bookingMessage?: string,
-  ) => {
+  const bookPatientSlot = (slotId: string, bookingMessage?: string) => {
     if (user.role !== "PATIENT") return;
     startTransition(async () => {
       const formData = new FormData();
@@ -399,11 +397,7 @@ export function DashboardWorkspace({
 
   const bookedCalendarTitle = useMemo(
     () =>
-      getCalendarTitle(
-        bookedCalendarDate,
-        bookedCalendarView,
-        calendarSystem,
-      ),
+      getCalendarTitle(bookedCalendarDate, bookedCalendarView, calendarSystem),
     [bookedCalendarDate, bookedCalendarView, calendarSystem],
   );
 
@@ -524,7 +518,9 @@ export function DashboardWorkspace({
 
   const selectedBookingOption = useMemo(
     () =>
-      selectedBookingOptions.find((option) => option.slotId === selectedBookingSlotId) ??
+      selectedBookingOptions.find(
+        (option) => option.slotId === selectedBookingSlotId,
+      ) ??
       selectedBookingOptions[0] ??
       null,
     [selectedBookingOptions, selectedBookingSlotId],
@@ -643,28 +639,28 @@ export function DashboardWorkspace({
               calendarSystem={calendarSystem}
               className="px-4 py-4"
               currentDate={bookedCalendarDate}
-            disabledDates={disabledPastDates}
-            monthAvailableDates={patientAvailableDateKeys}
-            monthBookedDates={patientBookedDateKeys}
-            monthBookedDayVariant="solid"
-            monthBookedDayLabel="Booked"
-            monthHideEvents={bookedCalendarView === "month"}
-            onCurrentDateChange={setBookedCalendarDate}
-            onEventSelectReadOnly={(event) => {
-              openPatientBookingDialog(event);
-            }}
-            onMonthDaySelect={({ date, status }) => {
-              if (
-                status === "OUTSIDE" ||
-                status === "DISABLED" ||
-                status === "BLOCKED" ||
-                status === "HOLIDAY"
-              ) {
-                return;
-              }
-              setBookedCalendarDate(date);
-              setBookedCalendarView("day");
-            }}
+              disabledDates={disabledPastDates}
+              monthAvailableDates={patientAvailableDateKeys}
+              monthBookedDates={patientBookedDateKeys}
+              monthBookedDayVariant="solid"
+              monthBookedDayLabel="Booked"
+              monthHideEvents={bookedCalendarView === "month"}
+              onCurrentDateChange={setBookedCalendarDate}
+              onEventSelectReadOnly={(event) => {
+                openPatientBookingDialog(event);
+              }}
+              onMonthDaySelect={({ date, status }) => {
+                if (
+                  status === "OUTSIDE" ||
+                  status === "DISABLED" ||
+                  status === "BLOCKED" ||
+                  status === "HOLIDAY"
+                ) {
+                  return;
+                }
+                setBookedCalendarDate(date);
+                setBookedCalendarView("day");
+              }}
               onSlotBookAction={({ event }) => {
                 openPatientBookingDialog(event);
               }}
@@ -694,7 +690,8 @@ export function DashboardWorkspace({
             <DialogHeader>
               <DialogTitle>Book Appointment</DialogTitle>
               <DialogDescription>
-                Confirm account details and share anything important before booking.
+                Confirm account details and share anything important before
+                booking.
               </DialogDescription>
             </DialogHeader>
 
@@ -846,90 +843,91 @@ export function DashboardWorkspace({
   return (
     <div className="@container/main font-at-aero-regular flex flex-1 flex-col gap-4 p-4 md:p-6">
       <SummaryCards role={user.role} summary={summary} />
+      <div>
+        <h2 className="font-cormorant text-2xl leading-none">
+          {bookedScheduleTitle}
+        </h2>
+        <p className="font-at-aero-regular text-muted-foreground mt-1 text-sm">
+          {bookedScheduleSubtitle}
+        </p>
+      </div>
       <Frame className="w-full">
-          <FramePanel className="overflow-hidden p-0">
-            <div className="border-b px-5 py-4">
-              <div>
-                <h2 className="font-cormorant text-2xl leading-none">
-                  {bookedScheduleTitle}
-                </h2>
-                <p className="font-at-aero-regular text-muted-foreground mt-1 text-sm">
-                  {bookedScheduleSubtitle}
-                </p>
+        <FramePanel className="overflow-hidden p-0">
+          <div className="px-5 py-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <Button
+                  aria-label="Previous period"
+                  disabled={!canGoPrevious}
+                  onClick={handleBookedCalendarPrevious}
+                  size="icon"
+                  variant="ghost"
+                >
+                  <ChevronLeftIcon aria-hidden="true" size={16} />
+                </Button>
+                <Button
+                  aria-label="Next period"
+                  onClick={handleBookedCalendarNext}
+                  size="icon"
+                  variant="ghost"
+                >
+                  <ChevronRightIcon aria-hidden="true" size={16} />
+                </Button>
+                <span className="font-cormorant min-w-[170px] text-xl leading-none sm:text-2xl">
+                  {bookedCalendarTitle}
+                </span>
               </div>
 
-              <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-center gap-2">
-                  <Button
-                    aria-label="Previous period"
-                    disabled={!canGoPrevious}
-                    onClick={handleBookedCalendarPrevious}
-                    size="icon"
-                    variant="ghost"
-                  >
-                    <ChevronLeftIcon aria-hidden="true" size={16} />
-                  </Button>
-                  <Button
-                    aria-label="Next period"
-                    onClick={handleBookedCalendarNext}
-                    size="icon"
-                    variant="ghost"
-                  >
-                    <ChevronRightIcon aria-hidden="true" size={16} />
-                  </Button>
-                  <span className="font-cormorant min-w-[170px] text-xl leading-none sm:text-2xl">
-                    {bookedCalendarTitle}
-                  </span>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <Button
-                    onClick={() => setBookedCalendarDate(new Date())}
-                    size="sm"
-                    type="button"
-                    variant="outline"
-                  >
-                    Today
-                  </Button>
-                  <ToggleGroup
-                    onValueChange={(value) => {
-                      if (value === "gregorian" || value === "nepali") {
-                        setCalendarSystem(value);
-                      }
-                    }}
-                    size="sm"
-                    type="single"
-                    value={calendarSystem}
-                    variant="outline"
-                  >
-                    <ToggleGroupItem value="gregorian">AD</ToggleGroupItem>
-                    <ToggleGroupItem value="nepali">BS</ToggleGroupItem>
-                  </ToggleGroup>
-                  <Select
-                    onValueChange={(value: "month" | "week" | "day") =>
-                      setBookedCalendarView(value)
+              <div className="flex items-center gap-2">
+                <Button
+                  onClick={() => setBookedCalendarDate(new Date())}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  Today
+                </Button>
+                <ToggleGroup
+                  onValueChange={(value) => {
+                    if (value === "gregorian" || value === "nepali") {
+                      setCalendarSystem(value);
                     }
-                    value={bookedCalendarView}
-                  >
-                    <SelectTrigger className="w-[120px]">
-                      <SelectValue placeholder="View" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="month">Month</SelectItem>
-                      <SelectItem value="week">Week</SelectItem>
-                      <SelectItem value="day">Day</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
+                  }}
+                  size="sm"
+                  type="single"
+                  value={calendarSystem}
+                  variant="outline"
+                >
+                  <ToggleGroupItem value="gregorian">AD</ToggleGroupItem>
+                  <ToggleGroupItem value="nepali">BS</ToggleGroupItem>
+                </ToggleGroup>
+                <Select
+                  onValueChange={(value: "month" | "week" | "day") =>
+                    setBookedCalendarView(value)
+                  }
+                  value={bookedCalendarView}
+                >
+                  <SelectTrigger className="w-[120px]">
+                    <SelectValue placeholder="View" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="month">Month</SelectItem>
+                    <SelectItem value="week">Week</SelectItem>
+                    <SelectItem value="day">Day</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
             </div>
+          </div>
           <EventCalendar
             blockedDates={blockedDates}
             calendarSystem={calendarSystem}
-            className="px-4 py-4"
+            // className="px-4 py-4"
             allowCreate={false}
             currentDate={bookedCalendarDate}
-            disabledDates={user.role === "DOCTOR" ? disabledPastDates : undefined}
+            disabledDates={
+              user.role === "DOCTOR" ? disabledPastDates : undefined
+            }
             holidayDates={summary.holidayDates}
             monthBookedDates={doctorBookedDateKeys}
             events={bookedScheduleEvents}
@@ -988,7 +986,11 @@ export function DashboardWorkspace({
                 : undefined
             }
             onViewChange={(nextView) => {
-              if (nextView === "month" || nextView === "week" || nextView === "day") {
+              if (
+                nextView === "month" ||
+                nextView === "week" ||
+                nextView === "day"
+              ) {
                 setBookedCalendarView(nextView);
               }
             }}
@@ -997,7 +999,6 @@ export function DashboardWorkspace({
           />
         </FramePanel>
       </Frame>
-
       <Tabs defaultValue="staff" className="w-full gap-4">
         <div className="flex items-center justify-between">
           <TabsList>

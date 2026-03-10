@@ -153,10 +153,6 @@ export function DoctorScheduleManager({
         <FramePanel className="space-y-4 p-5">
           <div>
             <FrameTitle>Simple Schedule Setup</FrameTitle>
-            <FrameDescription>
-              Keep it easy for non-technical doctors. {NEPAL_WORKING_DAYS} are
-              working days, Saturday is holiday by default.
-            </FrameDescription>
           </div>
 
           <form action={applyNepalWeeklyScheduleAction} className="grid gap-2">
@@ -208,13 +204,13 @@ export function DoctorScheduleManager({
         </FramePanel>
 
         <FramePanel className="overflow-hidden p-0 m-0! h-full">
-          <div className="border-b px-5 py-4">
+          {/* <div className="border-b px-5 py-4">
             <FrameTitle>Doctor Schedule Calendar</FrameTitle>
             <FrameDescription>
               Red pattern = holiday/blocked day. Grey pattern = outside current month.
               Use AD/BS switch on the top-right.
             </FrameDescription>
-          </div>
+          </div> */}
           <DoctorScheduleCalendar
             blockedDates={blockedDates}
             bookedDates={fullyBookedDateKeys}
